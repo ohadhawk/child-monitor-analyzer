@@ -1,0 +1,49 @@
+# Downloaded ML models (large binary files).
+models/
+models1/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# PyInstaller
+*.spec.bak
+
+# Logs
+*.log
+
+# Intermediate analysis caches
+*.stt_cache.json
+*.events_cache.json
+*.analysis.json
+
+# Audio test files (large).
+*.WAV
+*.wav
+*.mp3
+*.m4a
+*.flac
+
+# Per-file analysis output folders (contain analysis.json, etc.)
+20260*/
+
+# Temporary pip output
+pip_out.txt
+pip_err.txt
+pip_output.txt
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store

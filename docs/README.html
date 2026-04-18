@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Child Monitor Analyzer - Documentation</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --blue: #0071c5;
+    --dark: #1a1a2e;
+    --light: #e8f4fd;
+    --border: #d0e4f7;
+    --code-bg: #f5f7fa;
+    --text: #1e1e2e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--text);
+    background: #fafbfe;
+  }
+  /* Sidebar TOC */
+  #toc-sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: 260px;
+    height: 100vh;
+    background: var(--dark);
+    color: #cfd8e3;
+    overflow-y: auto;
+    padding: 20px 14px;
+    font-size: 13px;
+    z-index: 100;
+    border-right: 3px solid var(--blue);
+  }
+  #toc-sidebar h2 {
+    color: #fff;
+    font-size: 13px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2d4a6a;
+  }
+  #toc-sidebar ul { list-style: none; }
+  #toc-sidebar li { margin: 3px 0; }
+  #toc-sidebar a {
+    color: #8bb8d4;
+    text-decoration: none;
+    display: block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: background 0.2s;
+  }
+  #toc-sidebar a:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  #toc-sidebar ul ul { padding-left: 14px; }
+  #toc-sidebar ul ul a { font-size: 12px; color: #6a9fc0; }
+  /* Main content */
+  #main-content {
+    margin-left: 260px;
+    max-width: 900px;
+    padding: 32px 40px 60px;
+  }
+  h1 { font-size: 28px; color: var(--blue); margin: 40px 0 10px; border-bottom: 2px solid var(--blue); padding-bottom: 8px; }
+  h2 { font-size: 22px; color: var(--blue); margin: 36px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 17px; color: #333; margin: 24px 0 8px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 24px; }
+  li { margin: 4px 0; }
+  a { color: var(--blue); }
+  strong { font-weight: 600; }
+  code {
+    background: var(--code-bg);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13.5px;
+  }
+  pre {
+    background: #1e1e2e;
+    color: #d4d4d4;
+    padding: 16px 20px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 12px 0;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  th {
+    background: var(--blue);
+    color: #fff;
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 600;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
+  tr:nth-child(even) { background: #f8f9fc; }
+  blockquote {
+    border-left: 4px solid var(--blue);
+    background: var(--light);
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-style: italic;
+  }
+  hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+  .mermaid { margin: 20px 0; text-align: center; }
+  .section-note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 14px; margin: 12px 0; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar TOC -->
+<nav id="toc-sidebar">
+  <h2>Contents</h2>
+  <ul>
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#features">2. Features</a></li>
+    <li><a href="#architecture">3. Architecture</a></li>
+    <li><a href="#installation">4. Installation</a>
+      <ul>
+        <li><a href="#prerequisites">4.1 Prerequisites</a></li>
+        <li><a href="#install-source">4.2 Install from Source</a></li>
+        <li><a href="#install-dev">4.3 Dev Tools</a></li>
+        <li><a href="#first-run">4.4 First Run</a></li>
+      </ul>
+    </li>
+    <li><a href="#usage">5. Usage</a>
+      <ul>
+        <li><a href="#cli">5.1 CLI</a></li>
+        <li><a href="#gui">5.2 GUI</a></li>
+      </ul>
+    </li>
+    <li><a href="#detection-types">6. Detection Types</a></li>
+    <li><a href="#configuration">7. Configuration</a>
+      <ul>
+        <li><a href="#word-lists">7.1 Profanity Word Lists</a></li>
+        <li><a href="#thresholds">7.2 Detection Thresholds</a></li>
+      </ul>
+    </li>
+    <li><a href="#project-structure">8. Project Structure</a></li>
+    <li><a href="#tech-stack">9. Technology Stack</a></li>
+    <li><a href="#executable">10. Building an Executable</a></li>
+    <li><a href="#development">11. Development</a></li>
+    <li><a href="#license">12. License</a></li>
+  </ul>
+</nav>
+
+<!-- Main Content -->
+<div id="main-content">
+
+<h1>Child Monitor Analyzer</h1>
+<p>Analyse Hebrew audio files for profanity, shouting, crying, and other events &mdash; with precise timestamps.</p>
+
+<hr>
+
+<h2 id="overview">1. Overview</h2>
+<p>Child Monitor Analyzer is a Python desktop application that analyses Hebrew audio recordings to detect:</p>
+<ul>
+  <li><strong>Profanity</strong> &mdash; via curated Hebrew word lists with morphological prefix stripping, plus AI-based sentence-level classification</li>
+  <li><strong>Shouting, screaming, crying</strong> &mdash; via pre-trained audio neural networks (PANNs) on Google AudioSet</li>
+  <li><strong>Volume spikes</strong> &mdash; via RMS energy analysis</li>
+</ul>
+<p>Each detection is pinpointed to an exact timestamp. Results are presented in an interactive GUI with colour-coded report table and integrated audio player, or exported as JSON via the CLI.</p>
+
+<hr>
+
+<h2 id="features">2. Features</h2>
+<table>
+  <tr><th>Feature</th><th>Description</th></tr>
+  <tr><td><strong>Hebrew STT</strong></td><td>Word-level transcription using faster-whisper + ivrit-ai Hebrew model</td></tr>
+  <tr><td><strong>Audio Event Detection</strong></td><td>PANNs SoundEventDetection for shout/cry/scream/laughter classification</td></tr>
+  <tr><td><strong>Volume Analysis</strong></td><td>librosa RMS energy for detecting abnormally loud sections</td></tr>
+  <tr><td><strong>Profanity Detection</strong></td><td>Dual-layer: word-list matching (hard + soft tiers) with Hebrew prefix stripping, plus OpenCensor-Hebrew AI model</td></tr>
+  <tr><td><strong>Interactive GUI</strong></td><td>PySide6 RTL Hebrew desktop application with detection report table</td></tr>
+  <tr><td><strong>Audio Playback</strong></td><td>Integrated player with play/pause, +/-10s skip, seek slider, volume control</td></tr>
+  <tr><td><strong>Play from Detection</strong></td><td>Click any detection row to jump directly to that timestamp</td></tr>
+  <tr><td><strong>JSON Export</strong></td><td>Full report export with timestamps, types, confidence scores</td></tr>
+  <tr><td><strong>CLI Interface</strong></td><td>Command-line interface for batch processing and scripting</td></tr>
+</table>
+
+<hr>
+
+<h2 id="architecture">3. Architecture</h2>
+<div class="mermaid">
+graph TB
+    subgraph Input
+        A["Audio File&lt;br/&gt;WAV / MP3 / M4A / FLAC"]
+    end
+
+    subgraph Pipeline["Analysis Pipeline"]
+        direction TB
+        B["Hebrew STT&lt;br/&gt;faster-whisper + ivrit-ai"]
+        C["Audio Event Detection&lt;br/&gt;PANNs + librosa RMS"]
+        D["Profanity Detection&lt;br/&gt;Word-list + OpenCensor-Hebrew AI"]
+    end
+
+    subgraph Output
+        E[AnalysisReport]
+        F[CLI Summary Table]
+        G[GUI Report + Player]
+        H[JSON Export]
+    end
+
+    A --> B
+    A --> C
+    B --> D
+    B --> E
+    C --> E
+    D --> E
+    E --> F
+    E --> G
+    E --> H
+
+    style B fill:#90EE90
+    style C fill:#90EE90
+    style D fill:#90EE90
+    style E fill:#FFD700
+</div>
+
+<p><strong>Pipeline flow:</strong></p>
+<ol>
+  <li><strong>STT</strong> and <strong>Audio Event Detection</strong> run in <strong>parallel</strong> (separate threads)</li>
+  <li>When STT completes, <strong>Profanity Detection</strong> runs on the transcription output</li>
+  <li>All detections are <strong>merged, deduplicated</strong>, and sorted by timestamp</li>
+  <li>Results are presented via CLI or GUI</li>
+</ol>
+
+<hr>
+
+<h2 id="installation">4. Installation</h2>
+
+<h3 id="prerequisites">4.1 Prerequisites</h3>
+<ul>
+  <li>Python 3.10 or higher</li>
+  <li>pip</li>
+</ul>
+
+<h3 id="install-source">4.2 Install from Source</h3>
+<pre><code>git clone &lt;repository-url&gt;
+cd monitor
+pip install -e .</code></pre>
+
+<h3 id="install-dev">4.3 Install with Development Tools</h3>
+<pre><code>pip install -e ".[dev]"</code></pre>
+
+<h3 id="first-run">4.4 First Run</h3>
+<p>On first use, the tool will automatically download:</p>
+<ul>
+  <li><strong>ivrit-ai/whisper-large-v3-turbo-ct2</strong> (~1.5 GB) &mdash; Hebrew Whisper model</li>
+  <li><strong>PANNs CNN14</strong> (~300 MB) &mdash; Audio event detection model</li>
+  <li><strong>OpenCensor-Hebrew</strong> (~500 MB) &mdash; AI profanity classifier (optional)</li>
+</ul>
+<p>Models are cached locally after download.</p>
+
+<hr>
+
+<h2 id="usage">5. Usage</h2>
+
+<h3 id="cli">5.1 CLI</h3>
+<p>Basic analysis:</p>
+<pre><code>monitor recording.wav</code></pre>
+<p>Export JSON report:</p>
+<pre><code>monitor recording.wav -o report.json</code></pre>
+<p>Disable AI profanity classification (faster, word-list only):</p>
+<pre><code>monitor recording.wav --no-ai</code></pre>
+<p>Verbose logging:</p>
+<pre><code>monitor recording.wav --verbose</code></pre>
+
+<p><strong>CLI output example:</strong></p>
+<pre><code>============================================================
+  File: recording.wav
+  Duration: 05:23
+  Speech segments: 42
+  Detections: 7
+============================================================
+
+  Time      Type             Confidence     Details
+  --------------------------------------------------------
+  00:45     Profanity        90%            word1, word2
+  01:12     Shout            78%            Shout
+  02:03     Cry              65%            Crying, sobbing
+  03:15     Volume Spike     85%            RMS=0.1234</code></pre>
+
+<h3 id="gui">5.2 GUI</h3>
+<p>Launch the graphical interface:</p>
+<pre><code>monitor-gui</code></pre>
+<p><strong>GUI workflow:</strong></p>
+<ol>
+  <li>Click <strong>Open Audio File</strong> to select a recording</li>
+  <li>Click <strong>Analyse</strong> to start processing</li>
+  <li>View detections in the colour-coded report table</li>
+  <li>Click the <strong>Play</strong> button on any row to hear the audio from that timestamp</li>
+  <li>Use the audio player controls: play/pause, +/-10s skip, seek slider, volume</li>
+</ol>
+
+<hr>
+
+<h2 id="detection-types">6. Detection Types</h2>
+<table>
+  <tr><th>Type</th><th>Hebrew Label</th><th>Detection Method</th><th>Colour</th></tr>
+  <tr><td>Profanity</td><td>&#x5E0;&#x5D9;&#x5D1;&#x5D5;&#x5DC; &#x5E4;&#x5D4;</td><td>Word-list + AI</td><td style="background:#ffc8c8;">Red</td></tr>
+  <tr><td>Shout</td><td>&#x5E6;&#x5E2;&#x5E7;&#x5D4;</td><td>PANNs AudioSet</td><td style="background:#ffe1b4;">Orange</td></tr>
+  <tr><td>Scream</td><td>&#x5E6;&#x5E8;&#x5D7;&#x5D4;</td><td>PANNs AudioSet</td><td style="background:#ffd2aa;">Dark Orange</td></tr>
+  <tr><td>Cry</td><td>&#x5D1;&#x5DB;&#x5D9;</td><td>PANNs AudioSet</td><td style="background:#c8dcff;">Blue</td></tr>
+  <tr><td>Wail</td><td>&#x5D9;&#x5DC;&#x5DC;&#x5D4;</td><td>PANNs AudioSet</td><td style="background:#c8dcff;">Blue</td></tr>
+  <tr><td>Baby Cry</td><td>&#x5D1;&#x5DB;&#x5D9; &#x5EA;&#x5D9;&#x5E0;&#x5D5;&#x5E7;</td><td>PANNs AudioSet</td><td style="background:#d2c8ff;">Purple</td></tr>
+  <tr><td>Laughter</td><td>&#x5E6;&#x5D7;&#x5D5;&#x5E7;</td><td>PANNs AudioSet</td><td style="background:#dcffdc;">Green</td></tr>
+  <tr><td>Volume Spike</td><td>&#x5E2;&#x5D5;&#x5E6;&#x5DE;&#x5D4; &#x5D7;&#x5E8;&#x5D9;&#x5D2;&#x5D4;</td><td>RMS Energy</td><td style="background:#e6e6e6;">Grey</td></tr>
+</table>
+
+<hr>
+
+<h2 id="configuration">7. Configuration</h2>
+
+<h3 id="word-lists">7.1 Profanity Word Lists</h3>
+<p>The tool uses two tiers of Hebrew profanity word lists located in the <code>data/</code> directory:</p>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>data/he_profanity.txt</code></td><td><strong>Hard profanity</strong> &mdash; severe/explicit words that should always be flagged</td></tr>
+  <tr><td><code>data/he_profanity_soft.txt</code></td><td><strong>Soft profanity</strong> &mdash; milder words, insults, and child-sensitive language</td></tr>
+</table>
+<p><strong>Format:</strong> One word per line. Lines starting with <code>#</code> are comments.</p>
+<p><strong>Hebrew morphology:</strong> The detector automatically strips common Hebrew prefixes (&#x5D1;, &#x5DC;, &#x5DE;, &#x5DB;, &#x5D4;, &#x5D5;, &#x5E9;, etc.) before matching, so prefixed forms are detected automatically.</p>
+
+<h3 id="thresholds">7.2 Detection Thresholds</h3>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Description</th></tr>
+  <tr><td>PANNs confidence threshold</td><td>0.3</td><td>Minimum probability for audio event detection</td></tr>
+  <tr><td>Minimum event duration</td><td>0.5s</td><td>Events shorter than this are discarded</td></tr>
+  <tr><td>Volume spike percentile</td><td>95th</td><td>RMS values above this percentile are flagged</td></tr>
+  <tr><td>AI profanity threshold</td><td>0.5</td><td>Minimum OpenCensor-Hebrew probability</td></tr>
+</table>
+
+<hr>
+
+<h2 id="project-structure">8. Project Structure</h2>
+<pre><code>monitor/
+&#9500;&#9472;&#9472; pyproject.toml                      # Project config and dependencies
+&#9500;&#9472;&#9472; README.md                           # Documentation
+&#9500;&#9472;&#9472; data/
+&#9474;   &#9500;&#9472;&#9472; he_profanity.txt                # Hard profanity word list
+&#9474;   &#9492;&#9472;&#9472; he_profanity_soft.txt           # Child-sensitive soft word list
+&#9492;&#9472;&#9472; src/monitor/
+    &#9500;&#9472;&#9472; __init__.py                     # Package init with version
+    &#9500;&#9472;&#9472; __main__.py                     # python -m monitor entry point
+    &#9500;&#9472;&#9472; models.py                       # Data models (DetectionType, Detection, AnalysisReport)
+    &#9500;&#9472;&#9472; stt.py                          # Hebrew STT (faster-whisper + ivrit-ai)
+    &#9500;&#9472;&#9472; audio_events.py                 # PANNs SED + librosa RMS volume detection
+    &#9500;&#9472;&#9472; profanity.py                    # Word-list matching + AI classification
+    &#9500;&#9472;&#9472; pipeline.py                     # Pipeline orchestrator (parallel execution)
+    &#9500;&#9472;&#9472; cli.py                          # CLI entry point (argparse)
+    &#9492;&#9472;&#9472; gui/
+        &#9500;&#9472;&#9472; __init__.py                 # GUI sub-package
+        &#9500;&#9472;&#9472; main_window.py              # PySide6 RTL main window + QThread worker
+        &#9500;&#9472;&#9472; report_table.py             # Colour-coded detection table + play buttons
+        &#9492;&#9472;&#9472; audio_player.py             # QMediaPlayer with seek and skip controls</code></pre>
+
+<hr>
+
+<h2 id="tech-stack">9. Technology Stack</h2>
+<table>
+  <tr><th>Component</th><th>Library</th><th>Version</th><th>License</th><th>Purpose</th></tr>
+  <tr><td>Hebrew STT</td><td>faster-whisper</td><td>&ge; 1.0</td><td>MIT</td><td>CTranslate2 Whisper engine, 4x faster</td></tr>
+  <tr><td>Hebrew Model</td><td>ivrit-ai/whisper-large-v3-turbo-ct2</td><td>&mdash;</td><td>Apache-2.0</td><td>Hebrew fine-tuned Whisper (5000+ hrs)</td></tr>
+  <tr><td>Audio Events</td><td>panns_inference</td><td>&ge; 0.1</td><td>MIT</td><td>Google AudioSet 527-class detection</td></tr>
+  <tr><td>Volume Analysis</td><td>librosa</td><td>&ge; 0.10</td><td>ISC</td><td>RMS energy computation</td></tr>
+  <tr><td>Profanity AI</td><td>OpenCensor-Hebrew (AlephBERT)</td><td>&mdash;</td><td>Attribution</td><td>Hebrew profanity classification</td></tr>
+  <tr><td>ML Framework</td><td>PyTorch</td><td>&ge; 2.0</td><td>BSD</td><td>Neural network runtime</td></tr>
+  <tr><td>NLP</td><td>transformers</td><td>&ge; 4.30</td><td>Apache-2.0</td><td>HuggingFace model loading</td></tr>
+  <tr><td>GUI Framework</td><td>PySide6</td><td>&ge; 6.5</td><td>LGPL-3.0</td><td>RTL Hebrew desktop application</td></tr>
+  <tr><td>Audio Format</td><td>PyAV (bundled)</td><td>&mdash;</td><td>Apache-2.0</td><td>Audio format decoding</td></tr>
+</table>
+
+<hr>
+
+<h2 id="executable">10. Building an Executable</h2>
+<p>Build a standalone <code>.exe</code> using PyInstaller:</p>
+<pre><code>pip install -e ".[dev]"
+pyinstaller --name monitor-gui \
+            --onedir \
+            --windowed \
+            --add-data "data;data" \
+            --hidden-import monitor.gui \
+            --hidden-import monitor.gui.main_window \
+            --hidden-import monitor.gui.report_table \
+            --hidden-import monitor.gui.audio_player \
+            src/monitor/gui/main_window.py</code></pre>
+<p>The executable and all dependencies will be in <code>dist/monitor-gui/</code>.</p>
+<blockquote><strong>Note:</strong> The first run will still download ML models (~2.3 GB total) unless you pre-bundle them.</blockquote>
+
+<hr>
+
+<h2 id="development">11. Development</h2>
+<h3>11.1 Run Tests</h3>
+<pre><code>pytest</code></pre>
+<h3>11.2 Code Style</h3>
+<p>This project follows:</p>
+<ul>
+  <li><a href="https://peps.python.org/pep-0008/">PEP 8</a> &mdash; code style</li>
+  <li><a href="https://google.github.io/styleguide/pyguide.html">Google Python Style Guide</a> &mdash; docstrings</li>
+  <li>ASCII printable characters (32-127) in code and comments</li>
+  <li>Type hints on all function signatures</li>
+  <li><code>logging</code> module for all diagnostic output (never <code>print()</code>)</li>
+</ul>
+
+<hr>
+
+<h2 id="license">12. License</h2>
+<p>This project is provided as-is. See individual dependency licences above.</p>
+
+</div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+</body>
+</html>

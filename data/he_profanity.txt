@@ -1,0 +1,34 @@
+# Hebrew hard profanity word list
+# One word per line. Lines starting with # are comments.
+# These are severe/explicit words that should always be flagged.
+
+# Sexual / anatomical terms
+זין
+שמוק
+כוס
+זונה
+שרמוטה
+תחת
+ביצים
+פוץ
+מניאק
+
+# Sexually explicit expressions
+כוסית
+בן זונה
+בת זונה
+כוס אמק
+כוס אחתק
+יבן זונה
+
+# Strong insults
+חרא
+מזדיין
+מזדיינת
+זיון
+זיין
+הזדיינו
+לזיין
+תזדיין
+תזדייני
+מסריח

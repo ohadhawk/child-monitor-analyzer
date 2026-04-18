@@ -1,0 +1,13 @@
+# Core dependencies for Child Monitor Analyzer.
+# Install with: pip install -r requirements.txt
+#
+# For editable install with dev tools instead:
+#   pip install -e ".[dev]"
+
+faster-whisper>=1.0.0
+panns-inference>=0.1.0
+librosa>=0.10.0
+torch>=2.0.0
+transformers>=4.30.0
+PySide6>=6.5.0
+numpy>=1.24.0

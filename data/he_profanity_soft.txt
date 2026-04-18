@@ -1,0 +1,45 @@
+# Hebrew soft / child-sensitive profanity word list
+# One word per line. Lines starting with # are comments.
+# These are milder words — insults, name-calling, exclusion language —
+# that are inappropriate in contexts involving children.
+
+# Name-calling / insults
+מפגר
+מפגרת
+אידיוט
+אידיוטית
+טמבל
+טמבלית
+מטומטם
+מטומטמת
+דביל
+דבילית
+טיפש
+טיפשה
+מטורף
+מטורפת
+לוזר
+
+# Mild curses / exclamations
+לעזאזל
+חרא
+בלאגן
+יאללה
+כאפות
+
+# Exclusion / threatening language
+לך מפה
+לכי מפה
+סתום
+סתמי
+תשתוק
+תשתקי
+שקט
+תסתלק
+תסתלקי
+
+# Body-shaming
+שמן
+שמנה
+מכוער
+מכוערת
