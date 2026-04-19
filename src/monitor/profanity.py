@@ -5,8 +5,8 @@ Implements a dual-layer approach:
   Layer 1: Exact word matching against curated Hebrew profanity word lists
            (hard + soft tiers), with morphological prefix stripping for
            common Hebrew prefixes.
-  Layer 2: Sentence-level AI classification using OpenCensor-Hebrew
-           (AlephBERT-based) for context-aware profanity detection.
+  Layer 2: Sentence-level AI classification using textdetox
+           multilingual toxicity classifier for context-aware detection.
 
 Usage:
     from monitor.profanity import ProfanityDetector
@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Callable, List, Optional, Set
 
 from .models import Detection, DetectionType, TranscribedSegment
 
@@ -111,7 +113,7 @@ class ProfanityDetector:
     """Detect profanity in transcribed Hebrew text.
 
     Layer 1: Word-list matching with Hebrew morphological prefix stripping.
-    Layer 2: AI classification using OpenCensor-Hebrew (AlephBERT-based).
+    Layer 2: AI classification using textdetox multilingual toxicity model.
 
     Attributes:
         _hard_words: Set of severe profanity words.
@@ -138,6 +140,7 @@ class ProfanityDetector:
         self._use_ai = use_ai
         self._ai_threshold = ai_threshold
         self._ai_pipeline = None
+        self._ai_load_lock = threading.Lock()
 
         log.info(
             "Profanity word lists loaded: %d hard + %d soft = %d total.",
@@ -150,24 +153,162 @@ class ProfanityDetector:
     # Private helpers -- AI model
     # ------------------------------------------------------------------
 
-    def _load_ai_model(self) -> None:
-        """Load the OpenCensor-Hebrew AI pipeline if not already loaded."""
+    # Sub-progress callback type: (bytes_done, bytes_total, label).
+    _SubProgressCallback = Callable[[int, int, str], None]
+
+    _AI_MODEL_TIMEOUT = 120  # seconds to wait for model download/load
+
+    def preload_ai_model(
+        self,
+        on_sub_progress: Optional[_SubProgressCallback] = None,
+    ) -> None:
+        """Public entry point to eagerly load the AI model.
+
+        Safe to call from any thread; guarded by _ai_load_lock.
+
+        Args:
+            on_sub_progress: Optional callback for download progress
+                (bytes_done, bytes_total, label).
+        """
+        self._load_ai_model(on_sub_progress)
+
+    def _load_ai_model(
+        self,
+        on_sub_progress: Optional[_SubProgressCallback] = None,
+    ) -> None:
+        """Load the toxicity AI pipeline if not already loaded.
+
+        Tries local cache first (instant). If not cached, attempts download
+        with a thread-based timeout to avoid hanging on network issues.
+        Thread-safe: guarded by _ai_load_lock.
+        """
+        with self._ai_load_lock:
+            self._load_ai_model_unlocked(on_sub_progress)
+
+    def _load_ai_model_unlocked(
+        self,
+        on_sub_progress: Optional[_SubProgressCallback] = None,
+    ) -> None:
+        """Inner model loading logic. Caller must hold _ai_load_lock."""
         if self._ai_pipeline is not None:
             return
         try:
             from transformers import pipeline as hf_pipeline
 
-            log.info("Loading OpenCensor-Hebrew AI model...")
-            self._ai_pipeline = hf_pipeline(
-                "text-classification",
-                model="LikoKIko/OpenCensor-Hebrew",
-                truncation=True,
-                max_length=512,
-            )
-            log.info("AI profanity model loaded.")
+            log.info("Loading textdetox toxicity AI model...")
+            # Try local cache first (no network).
+            # Patch huggingface_hub offline flag directly — the env var is
+            # cached at import time, so os.environ alone won't help.
+            import huggingface_hub.constants as _hf_consts
+            _prev_offline = _hf_consts.HF_HUB_OFFLINE
+            _hf_consts.HF_HUB_OFFLINE = True
+            try:
+                self._ai_pipeline = hf_pipeline(
+                    "text-classification",
+                    model="textdetox/bert-multilingual-toxicity-classifier",
+                    truncation=True,
+                    max_length=512,
+                    local_files_only=True,
+                )
+                log.info("AI toxicity model loaded from local cache.")
+                return
+            except OSError:
+                log.info("AI model not in local cache; attempting download...")
+            finally:
+                _hf_consts.HF_HUB_OFFLINE = _prev_offline
+
+            # Build a tqdm class that forwards download progress to the GUI.
+            model_kwargs: dict = {}
+            if on_sub_progress is not None:
+                from .gui.strings import tr, S
+                try:
+                    from tqdm.auto import tqdm as _tqdm_base
+                except ImportError:
+                    _tqdm_base = None
+
+                if _tqdm_base is not None:
+                    _MIN_TOTAL = 1_000_000  # 1 MB — skip tiny config files
+                    _REPORT_INTERVAL = 0.25  # seconds between GUI updates
+                    _cb = on_sub_progress
+                    _label = tr(S.TOXICITY_DOWNLOADING)
+
+                    class _ProgressTqdm(_tqdm_base):
+                        """Forwards tqdm byte-progress to the GUI."""
+
+                        def __init__(self, *args, **kwargs):
+                            super().__init__(*args, **kwargs)
+                            self._lock = threading.Lock()
+                            self._actual_downloaded = 0
+                            self._actual_total = 0
+                            self._last_report_time = 0.0
+
+                        def update(self, n=1):
+                            super().update(n)
+                            if getattr(self, "unit", None) != "B":
+                                return
+                            with self._lock:
+                                self._actual_downloaded += n
+                                self._actual_total = self.total or 0
+                                total = self._actual_total
+                                if total < _MIN_TOTAL:
+                                    return
+                                downloaded = min(self._actual_downloaded, total)
+                                now = time.perf_counter()
+                                is_done = downloaded >= total
+                                if not is_done and (now - self._last_report_time) < _REPORT_INTERVAL:
+                                    return
+                                self._last_report_time = now
+                            _cb(downloaded, total, _label)
+
+                        def close(self):
+                            # Do NOT call _cb here — GC may call close()
+                            # after the pipeline has hidden the bar.
+                            super().close()
+
+                    model_kwargs["tqdm_class"] = _ProgressTqdm
+
+            # Download with timeout.
+            result: list = []
+            error: list = []
+
+            def _download() -> None:
+                try:
+                    result.append(hf_pipeline(
+                        "text-classification",
+                        model="textdetox/bert-multilingual-toxicity-classifier",
+                        truncation=True,
+                        max_length=512,
+                        model_kwargs=model_kwargs if model_kwargs else None,
+                    ))
+                except Exception as exc:
+                    error.append(exc)
+
+            t = threading.Thread(target=_download, daemon=True)
+            t.start()
+            t.join(timeout=self._AI_MODEL_TIMEOUT)
+            if t.is_alive():
+                log.warning(
+                    "Toxicity model download timed out after %ds; "
+                    "AI classification disabled.",
+                    self._AI_MODEL_TIMEOUT,
+                )
+                self._use_ai = False
+                return
+            if error:
+                raise error[0]
+            if result:
+                self._ai_pipeline = result[0]
+                log.info("AI toxicity model downloaded and loaded.")
+            else:
+                raise RuntimeError("AI model load returned no result")
         except Exception:
-            log.exception("Failed to load OpenCensor-Hebrew model; AI classification disabled.")
+            log.exception("Failed to load toxicity model; AI classification disabled.")
             self._use_ai = False
+
+    @property
+    def ai_available(self) -> bool:
+        """Whether the AI profanity model is loaded and active."""
+        return self._ai_pipeline is not None
 
     # ------------------------------------------------------------------
     # Public API

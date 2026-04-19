@@ -52,11 +52,15 @@ from PySide6.QtWidgets import (
 
 from ..analysis_worker import (
     run_analysis,
-    MSG_PROGRESS, MSG_SUB_PROGRESS, MSG_SUB_PROGRESS2,
-    MSG_TASK_PROGRESS, MSG_FINISHED, MSG_ERROR,
+    MSG_PROGRESS, MSG_SUB_PROGRESS, MSG_SUB_PROGRESS2, MSG_SUB_PROGRESS3,
+    MSG_TASK_PROGRESS, MSG_PARTIAL_STT, MSG_PARTIAL_EVENTS,
+    MSG_WARNING, MSG_FINISHED, MSG_ERROR,
 )
 from ..model_cache import setup_model_environment
-from ..models import AnalysisReport
+from ..models import (
+    AnalysisReport, Detection, DetectionType,
+    TranscribedSegment, TranscribedWord,
+)
 from .audio_player import AudioPlayerWidget
 from .report_table import ReportTableWidget
 from .sensitivity_panel import SensitivityDialog
@@ -126,10 +130,21 @@ class MainWindow(QMainWindow):
         self._current_audio: Optional[str] = None
         self._current_report: Optional[AnalysisReport] = None
 
+        # Accumulated partial results for incremental display.
+        self._partial_segments: List["TranscribedSegment"] = []
+        self._partial_detections: List["Detection"] = []
+        self._partial_dirty = False  # True when partials need UI refresh
+
         # Timer to poll the subprocess queue for progress/results.
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(50)  # 50 ms
         self._poll_timer.timeout.connect(self._poll_worker_queue)
+
+        # Debounce timer for refreshing UI with partial results (2s).
+        self._partial_refresh_timer = QTimer(self)
+        self._partial_refresh_timer.setInterval(2000)
+        self._partial_refresh_timer.setSingleShot(True)
+        self._partial_refresh_timer.timeout.connect(self._refresh_partial_ui)
 
         # Enable drag-and-drop on the main window.
         self.setAcceptDrops(True)
@@ -208,6 +223,18 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self._sub_progress_bar2)
 
+        # --- Third sub-progress bar (toxicity model download) ---
+        self._sub_progress_bar3 = QProgressBar()
+        self._sub_progress_bar3.setRange(0, 100)
+        self._sub_progress_bar3.setValue(0)
+        self._sub_progress_bar3.setVisible(False)
+        self._sub_progress_bar3.setTextVisible(True)
+        self._sub_progress_bar3.setFixedHeight(18)
+        self._sub_progress_bar3.setStyleSheet(
+            "QProgressBar { font-size: 11px; }"
+        )
+        layout.addWidget(self._sub_progress_bar3)
+
         # --- Task progress bars (parallel STT + audio events) ---
         self._task_bars: List[QProgressBar] = []
         task_labels = [tr(S.TASK_STT), tr(S.TASK_AUDIO_EVENTS)]
@@ -224,6 +251,28 @@ class MainWindow(QMainWindow):
         # --- Sensitivity dialog (created once, shown on button click) ---
         self._sensitivity_dialog = SensitivityDialog(self)
         self._sensitivity_dialog.thresholds_changed.connect(self._on_sensitivity_changed)
+
+        # --- Partial analysis warning banner ---
+        self._lbl_partial_warning = QLabel(tr(S.PARTIAL_WARNING))
+        self._lbl_partial_warning.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_partial_warning.setStyleSheet(
+            "QLabel { background-color: #FFF3CD; color: #856404; "
+            "font-size: 13px; font-weight: bold; padding: 6px; "
+            "border: 1px solid #FFEEBA; border-radius: 4px; margin: 2px 8px; }"
+        )
+        self._lbl_partial_warning.setVisible(False)
+        layout.addWidget(self._lbl_partial_warning)
+
+        # --- Analysis warning banner (e.g. AI profanity model unavailable) ---
+        self._lbl_analysis_warning = QLabel()
+        self._lbl_analysis_warning.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_analysis_warning.setStyleSheet(
+            "QLabel { background-color: #F8D7DA; color: #721C24; "
+            "font-size: 13px; font-weight: bold; padding: 6px; "
+            "border: 1px solid #F5C6CB; border-radius: 4px; margin: 2px 8px; }"
+        )
+        self._lbl_analysis_warning.setVisible(False)
+        layout.addWidget(self._lbl_analysis_warning)
 
         # --- Report table + Transcript in a splitter ---
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -430,6 +479,8 @@ class MainWindow(QMainWindow):
                                 tr(S.FILE_NOT_FOUND_MSG).format(path=file_path))
             return
         self._stop_previous_analysis()
+        self._clear_partial_state()
+        self._lbl_analysis_warning.setVisible(False)
         self._current_audio = file_path
         self._lbl_file.setText(str(Path(file_path)))
         self._btn_analyze.setEnabled(True)
@@ -444,6 +495,8 @@ class MainWindow(QMainWindow):
         self._sub_progress_bar.setValue(0)
         self._sub_progress_bar2.setVisible(False)
         self._sub_progress_bar2.setValue(0)
+        self._sub_progress_bar3.setVisible(False)
+        self._sub_progress_bar3.setValue(0)
         for bar in self._task_bars:
             bar.setVisible(False)
             bar.setValue(0)
@@ -542,6 +595,7 @@ class MainWindow(QMainWindow):
             return
 
         self._stop_previous_analysis()
+        self._clear_partial_state()
 
         # When the user explicitly clicks "Analyse" (force_restart=True),
         # clear intermediate caches so the analysis starts fresh.
@@ -629,8 +683,16 @@ class MainWindow(QMainWindow):
                 self._on_sub_progress(msg["done"], msg["total"], msg["label"])
             elif msg_type == MSG_SUB_PROGRESS2:
                 self._on_sub_progress2(msg["done"], msg["total"], msg["label"])
+            elif msg_type == MSG_SUB_PROGRESS3:
+                self._on_sub_progress3(msg["done"], msg["total"], msg["label"])
             elif msg_type == MSG_TASK_PROGRESS:
                 self._on_task_progress(msg["task_id"], msg["pct"], msg["label"])
+            elif msg_type == MSG_PARTIAL_STT:
+                self._on_partial_stt(msg["segments"])
+            elif msg_type == MSG_PARTIAL_EVENTS:
+                self._on_partial_events(msg["detections"])
+            elif msg_type == MSG_WARNING:
+                self._on_analysis_warning(msg["key"])
             elif msg_type == MSG_FINISHED:
                 report = AnalysisReport.from_dict(msg["report"])
                 self._poll_timer.stop()
@@ -674,6 +736,11 @@ class MainWindow(QMainWindow):
     def _on_sub_progress2(self, done: int, total: int, label: str) -> None:
         """Update the second sub-progress bar (used for parallel downloads)."""
         self._update_sub_bar(self._sub_progress_bar2, done, total, label)
+
+    @Slot(object, object, str)
+    def _on_sub_progress3(self, done: int, total: int, label: str) -> None:
+        """Update the third sub-progress bar (toxicity model download)."""
+        self._update_sub_bar(self._sub_progress_bar3, done, total, label)
 
     @staticmethod
     def _update_sub_bar(bar: QProgressBar, done: int, total: int, label: str) -> None:
@@ -737,6 +804,111 @@ class MainWindow(QMainWindow):
             bar.setValue(pct)
             bar.setFormat(f"{name}: {pct}% {label}")
 
+    # ------------------------------------------------------------------
+    # Incremental partial results
+    # ------------------------------------------------------------------
+
+    def _on_partial_stt(self, segment_dicts: list) -> None:
+        """Accumulate partial STT segments and schedule a debounced UI refresh."""
+        for d in segment_dicts:
+            try:
+                seg = TranscribedSegment(
+                    text=d["text"],
+                    start=d["start"],
+                    end=d["end"],
+                    words=[
+                        TranscribedWord(
+                            word=w["word"], start=w["start"],
+                            end=w["end"], confidence=w.get("confidence", 1.0),
+                        )
+                        for w in d.get("words", [])
+                    ],
+                )
+                self._partial_segments.append(seg)
+            except (KeyError, TypeError):
+                log.debug("Skipping malformed partial STT segment: %r", d)
+        self._schedule_partial_refresh()
+
+    def _on_partial_events(self, detection_dicts: list) -> None:
+        """Accumulate partial event detections and schedule a debounced UI refresh."""
+        for d in detection_dicts:
+            try:
+                det = Detection(
+                    type=DetectionType(d["type"]),
+                    start=d["start"],
+                    end=d["end"],
+                    confidence=d.get("confidence", 1.0),
+                    details=d.get("details", {}),
+                )
+                self._partial_detections.append(det)
+            except (KeyError, TypeError, ValueError):
+                log.debug("Skipping malformed partial detection: %r", d)
+        self._schedule_partial_refresh()
+
+    def _schedule_partial_refresh(self) -> None:
+        """Start or restart the debounce timer for partial UI refresh."""
+        self._partial_dirty = True
+        # Always restart the timer so the latest data is shown within 2s.
+        self._partial_refresh_timer.start()
+        # Show warning banner on first partial data.
+        if not self._lbl_partial_warning.isVisible():
+            self._lbl_partial_warning.setVisible(True)
+
+    @Slot()
+    def _refresh_partial_ui(self) -> None:
+        """Rebuild the report table and transcript with current partial data."""
+        if not self._partial_dirty:
+            return
+        self._partial_dirty = False
+        audio = self._current_audio or ""
+        # Apply sensitivity thresholds to partial detections.
+        thresholds = self._sensitivity_dialog.get_thresholds()
+        filtered_dets = [
+            d for d in self._partial_detections
+            if d.type == DetectionType.PROFANITY
+            or d.confidence >= thresholds.get(d.type, 0.0)
+        ]
+        # Build a temporary partial report for the table.
+        partial_report = AnalysisReport(
+            audio_path=audio,
+            duration_seconds=self._compute_partial_duration(),
+            segments=list(self._partial_segments),
+            detections=filtered_dets,
+        )
+        self._report_table.load_report(partial_report)
+        self._transcript.load_segments(
+            self._partial_segments, filtered_dets,
+        )
+        log.debug(
+            "Partial UI refresh: %d segments, %d detections (%d filtered)",
+            len(self._partial_segments), len(self._partial_detections),
+            len(filtered_dets),
+        )
+
+    def _compute_partial_duration(self) -> float:
+        """Estimate duration from accumulated partial data."""
+        dur = 0.0
+        if self._partial_segments:
+            dur = max(s.end for s in self._partial_segments)
+        if self._partial_detections:
+            dur = max(dur, max(d.end for d in self._partial_detections))
+        return dur
+
+    def _clear_partial_state(self) -> None:
+        """Reset partial accumulation state."""
+        self._partial_segments.clear()
+        self._partial_detections.clear()
+        self._partial_dirty = False
+        self._partial_refresh_timer.stop()
+        self._lbl_partial_warning.setVisible(False)
+
+    def _on_analysis_warning(self, key: str) -> None:
+        """Show a non-fatal analysis warning banner."""
+        text = tr(key)
+        log.warning("Analysis warning: %s", text)
+        self._lbl_analysis_warning.setText(text)
+        self._lbl_analysis_warning.setVisible(True)
+
     @Slot(object)
     def _on_finished(self, report: AnalysisReport) -> None:
         """Handle successful analysis completion.
@@ -751,6 +923,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         self._sub_progress_bar.setVisible(False)
         self._sub_progress_bar2.setVisible(False)
+        self._sub_progress_bar3.setVisible(False)
         for bar in self._task_bars:
             bar.setVisible(False)
         self._lbl_status.setVisible(False)
@@ -759,6 +932,8 @@ class MainWindow(QMainWindow):
         # Clean up process/queue references now that analysis is done.
         self._worker_process = None
         self._worker_queue = None
+        # Clear partial state — final report replaces partials.
+        self._clear_partial_state()
         self._current_report = report
         self._apply_sensitivity_filter()
         self._transcript.load_segments(report.segments, report.detections)
@@ -779,6 +954,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         self._sub_progress_bar.setVisible(False)
         self._sub_progress_bar2.setVisible(False)
+        self._sub_progress_bar3.setVisible(False)
         for bar in self._task_bars:
             bar.setVisible(False)
         self._lbl_status.setText(f"{tr(S.ERROR)}: {error_msg}")
@@ -787,6 +963,7 @@ class MainWindow(QMainWindow):
         # Clean up process/queue references now that analysis is done.
         self._worker_process = None
         self._worker_queue = None
+        self._clear_partial_state()
         QMessageBox.critical(self, tr(S.ERROR),
                              tr(S.ANALYSIS_FAILED).format(msg=error_msg))
         log.error("Analysis failed: %s", error_msg)

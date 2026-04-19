@@ -51,3 +51,5 @@ pip_output.txt
 # OS files
 Thumbs.db
 .DS_Store
+_check_analysis.py
+test_download.py

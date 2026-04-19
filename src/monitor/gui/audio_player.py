@@ -166,8 +166,12 @@ class AudioPlayerWidget(QWidget):
         # --- Event navigation buttons (prev / next detection) ---
         self._btn_prev_event = QPushButton(tr(S.PLAYER_PREV_EVENT))
         self._btn_next_event = QPushButton(tr(S.PLAYER_NEXT_EVENT))
+        # Force LTR text rendering so arrow placement is predictable
+        # (app-level is RTL).
         for button in (self._btn_prev_event, self._btn_next_event):
+            button.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
             button.setFixedHeight(32)
+            button.setStyleSheet("QPushButton { font-size: 11pt; padding: 1px 2px; }")
             button.setEnabled(False)  # enabled once events are loaded
 
         self._seek_slider = _ClickableSlider(Qt.Orientation.Horizontal)

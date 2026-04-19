@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -51,6 +52,15 @@ SubProgressCallback = Callable[[int, int, str], None]
 # task_id 0 = STT, task_id 1 = audio events.
 # percent == -1 means hide that task bar.
 TaskProgressCallback = Callable[[int, int, str], None]
+
+# Partial-result callbacks for incremental live display.
+# on_partial_stt: receives a list of new TranscribedSegment dicts.
+# on_partial_events: receives a list of new Detection dicts.
+PartialSttCallback = Callable[[list], None]
+PartialEventsCallback = Callable[[list], None]
+
+# Warning callback: (warning_key: str) -- string key from gui.strings.S.
+WarningCallback = Callable[[str], None]
 
 # ===========================
 # CORE CLASS
@@ -88,7 +98,11 @@ class AnalysisPipeline:
         on_progress: Optional[ProgressCallback] = None,
         on_sub_progress: Optional[SubProgressCallback] = None,
         on_sub_progress2: Optional[SubProgressCallback] = None,
+        on_sub_progress3: Optional[SubProgressCallback] = None,
         on_task_progress: Optional[TaskProgressCallback] = None,
+        on_partial_stt: Optional[PartialSttCallback] = None,
+        on_partial_events: Optional[PartialEventsCallback] = None,
+        on_warning: Optional[WarningCallback] = None,
     ) -> AnalysisReport:
         """Run full analysis on an audio file.
 
@@ -101,8 +115,14 @@ class AnalysisPipeline:
             on_sub_progress2: Optional callback for slot 1 sub-operation progress
                 (bytes_done, bytes_total, label). Used for the PANNs model
                 download so both can be shown concurrently.
+            on_sub_progress3: Optional callback for slot 2 sub-operation progress
+                (bytes_done, bytes_total, label). Used for the toxicity model
+                download.
             on_task_progress: Optional callback for parallel task progress
                 (task_id, percent, label). task_id: 0=STT, 1=audio_events.
+            on_partial_stt: Optional callback for incremental STT segments.
+            on_partial_events: Optional callback for incremental event detections.
+            on_warning: Optional callback for non-fatal warnings (string key).
 
         Returns:
             AnalysisReport with transcription and all detections.
@@ -119,7 +139,8 @@ class AnalysisPipeline:
 
         return self._analyze_impl(
             audio_path, on_progress, on_sub_progress,
-            on_sub_progress2, on_task_progress,
+            on_sub_progress2, on_sub_progress3, on_task_progress,
+            on_partial_stt, on_partial_events, on_warning,
         )
 
     def _analyze_impl(
@@ -128,7 +149,11 @@ class AnalysisPipeline:
         on_progress: Optional[ProgressCallback],
         on_sub_progress: Optional[SubProgressCallback],
         on_sub_progress2: Optional[SubProgressCallback],
+        on_sub_progress3: Optional[SubProgressCallback],
         on_task_progress: Optional[TaskProgressCallback],
+        on_partial_stt: Optional[PartialSttCallback],
+        on_partial_events: Optional[PartialEventsCallback],
+        on_warning: Optional[WarningCallback],
     ) -> AnalysisReport:
         """Inner analyze body."""
 
@@ -157,6 +182,15 @@ class AnalysisPipeline:
             if on_sub_progress2:
                 on_sub_progress2(done, total, label)
 
+        def _sub3(done: int, total: int, label: str) -> None:
+            if done > total > 0 or (total > 0 and done * 100 // total > 100):
+                log.warning(
+                    "sub-progress slot 2 inconsistent: done=%d total=%d label=%r",
+                    done, total, label,
+                )
+            if on_sub_progress3:
+                on_sub_progress3(done, total, label)
+
         def _task(task_id: int, pct: int, label: str) -> None:
             if on_task_progress:
                 on_task_progress(task_id, pct, label)
@@ -169,10 +203,23 @@ class AnalysisPipeline:
 
         _progress(0, "מתחיל ניתוח...")
 
-        # --- Phase 0.5: Load both models in parallel (with dual progress) ---
+        # --- Phase 0.5: Load all models in parallel (with dual progress) ---
         _progress(2, tr(S.PIPE_LOADING_STT))
         phase_start = time.perf_counter()
-        log.debug("phase=load_models start (parallel STT + SED)")
+        log.debug("phase=load_models start (parallel STT + SED + profanity)")
+
+        # Start profanity AI model preload on a standalone daemon thread.
+        # This runs concurrently and doesn't block Phase 0.5 completion.
+        # Phase 2 will find the model already loaded (or wait via the lock
+        # if the download is still in progress).
+        _prof_thread = threading.Thread(
+            target=self._profanity.preload_ai_model,
+            args=(_sub3,),
+            name="profanity-preload",
+            daemon=True,
+        )
+        _prof_thread.start()
+
         with ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="model-load",
         ) as pool:
@@ -191,6 +238,7 @@ class AnalysisPipeline:
         # --- Phase 1: STT + audio events in parallel ---
         segments, audio_detections = self._run_parallel_phase(
             audio_path, _progress, _task,
+            on_partial_stt, on_partial_events,
         )
         # Hide task bars after parallel phase.
         _task(0, -1, "")
@@ -205,11 +253,18 @@ class AnalysisPipeline:
         profanity_detections = self._profanity.detect(segments)
         _progress(85, f"{tr(S.PIPE_PROFANITY_SEARCH)} -- {len(profanity_detections)}")
 
+        # Warn the GUI if AI profanity model was not available.
+        if not self._profanity.ai_available and on_warning:
+            try:
+                on_warning(S.AI_PROFANITY_UNAVAILABLE)
+            except Exception:
+                log.debug("on_warning callback failed", exc_info=True)
+
         # --- Phase 3: Merge and deduplicate ---
         all_detections = audio_detections + profanity_detections
         all_detections = _deduplicate(all_detections)
 
-        duration = self._compute_duration(segments, all_detections)
+        duration = self._compute_duration(audio_path, segments, all_detections)
 
         _progress(100, tr(S.PIPE_DONE))
 
@@ -243,6 +298,8 @@ class AnalysisPipeline:
         audio_path: Path,
         progress_fn: Callable[[int, str], None],
         task_fn: Callable[[int, int, str], None],
+        on_partial_stt: Optional[PartialSttCallback] = None,
+        on_partial_events: Optional[PartialEventsCallback] = None,
     ) -> tuple[List[TranscribedSegment], List[Detection]]:
         """Run STT and audio event detection in parallel threads.
 
@@ -250,6 +307,8 @@ class AnalysisPipeline:
             audio_path: Path to the audio file.
             progress_fn: Overall progress callback.
             task_fn: Per-task progress callback(task_id, pct, label).
+            on_partial_stt: Callback for incremental STT segments.
+            on_partial_events: Callback for incremental event detections.
 
         Returns:
             Tuple of (segments, audio_event_detections).
@@ -263,12 +322,33 @@ class AnalysisPipeline:
         if cached_stt is not None:
             log.info("Loaded cached STT: %d segments from previous run.", len(cached_stt))
             task_fn(0, 100, f"{tr(S.TASK_STT)}: {len(cached_stt)}")
+            # Send cached STT to GUI immediately so partial UI shows progress.
+            if on_partial_stt is not None:
+                try:
+                    on_partial_stt([_seg_to_dict(s) for s in cached_stt])
+                except Exception:
+                    log.debug("on_partial_stt callback failed for cached STT", exc_info=True)
         else:
             task_fn(0, 1, tr(S.PIPE_STT_START))
 
         if cached_events is not None:
             log.info("Loaded cached events: %d detections from previous run.", len(cached_events))
             task_fn(1, 100, f"{tr(S.TASK_AUDIO_EVENTS)}: {len(cached_events)}")
+            # Send cached events to GUI immediately so partial UI shows progress.
+            if on_partial_events is not None:
+                try:
+                    on_partial_events([
+                        {
+                            "type": d.type.value,
+                            "start": round(d.start, 2),
+                            "end": round(d.end, 2),
+                            "confidence": round(d.confidence, 3),
+                            "details": d.details,
+                        }
+                        for d in cached_events
+                    ])
+                except Exception:
+                    log.debug("on_partial_events callback failed for cached events", exc_info=True)
         else:
             task_fn(1, 1, tr(S.PIPE_EVENTS_START))
 
@@ -283,6 +363,73 @@ class AnalysisPipeline:
         def _events_progress(pct: int, label: str) -> None:
             task_fn(1, max(1, pct), label)
 
+        # --- Time-based batching for incremental STT segments ---
+        # Accumulate segments and flush to callback every _STT_FLUSH_INTERVAL
+        # seconds to avoid flooding the IPC queue.
+        _STT_FLUSH_INTERVAL = 5.0  # seconds between flushes
+        _stt_batch: List[TranscribedSegment] = []
+        _stt_all_segments: List[TranscribedSegment] = []  # all segments received so far
+        _stt_last_flush = [time.perf_counter()]  # mutable for closure
+        _stt_lock = threading.Lock()
+
+        def _on_stt_segment(seg: TranscribedSegment) -> None:
+            """Accumulate STT segments and flush periodically."""
+            with _stt_lock:
+                _stt_all_segments.append(seg)
+                _stt_batch.append(seg)
+                now = time.perf_counter()
+                if now - _stt_last_flush[0] >= _STT_FLUSH_INTERVAL:
+                    _flush_stt_batch_locked()
+
+        def _flush_stt_batch() -> None:
+            """Acquire lock and flush."""
+            with _stt_lock:
+                _flush_stt_batch_locked()
+
+        def _flush_stt_batch_locked() -> None:
+            """Send accumulated STT segments via partial callback and save
+            intermediate cache. Caller holds _stt_lock."""
+            if not _stt_batch:
+                return
+            # Save all segments received so far to intermediate cache.
+            _save_intermediate_stt(audio_path, list(_stt_all_segments))
+            batch = [_seg_to_dict(s) for s in _stt_batch]
+            _stt_batch.clear()
+            _stt_last_flush[0] = time.perf_counter()
+            if on_partial_stt is not None:
+                try:
+                    on_partial_stt(batch)
+                except Exception:
+                    log.debug("on_partial_stt callback failed", exc_info=True)
+
+        # --- Incremental saving for PANNs chunk detections ---
+        _EVENTS_SAVE_INTERVAL = 5.0  # seconds between saves
+        _events_all_detections: List[Detection] = []
+        _events_last_save = [time.perf_counter()]
+
+        def _on_chunk_dets(dets: list) -> None:
+            _events_all_detections.extend(dets)
+            # Periodically save to intermediate cache.
+            now = time.perf_counter()
+            if now - _events_last_save[0] >= _EVENTS_SAVE_INTERVAL:
+                _save_intermediate_events(audio_path, list(_events_all_detections))
+                _events_last_save[0] = now
+            if on_partial_events is None:
+                return
+            try:
+                on_partial_events([
+                    {
+                        "type": d.type.value,
+                        "start": round(d.start, 2),
+                        "end": round(d.end, 2),
+                        "confidence": round(d.confidence, 3),
+                        "details": d.details,
+                    }
+                    for d in dets
+                ])
+            except Exception:
+                log.debug("on_partial_events callback failed", exc_info=True)
+
         segments: List[TranscribedSegment] = []
         audio_detections: List[Detection] = []
 
@@ -292,18 +439,24 @@ class AnalysisPipeline:
             futures = {}
             if cached_stt is None:
                 futures[pool.submit(
-                    self._stt.transcribe, audio_path, on_progress=_stt_progress,
+                    self._stt.transcribe, audio_path,
+                    on_progress=_stt_progress,
+                    on_segment=_on_stt_segment,
                 )] = "stt"
             if cached_events is None:
                 futures[pool.submit(
-                    self._audio_events.detect, audio_path, on_progress=_events_progress,
+                    self._audio_events.detect, audio_path,
+                    on_progress=_events_progress,
+                    on_chunk_detections=_on_chunk_dets,
                 )] = "events"
 
             for future in as_completed(futures):
                 task_name = futures[future]
                 if task_name == "stt":
                     segments = future.result()
-                    _save_intermediate_stt(audio_path, segments)
+                    # Flush any remaining buffered segments.
+                    _flush_stt_batch()
+                    _save_intermediate_stt(audio_path, segments, completed=True)
                     task_fn(0, 100, f"{tr(S.TASK_STT)}: {len(segments)}")
                     progress_fn(50, f"{tr(S.TASK_STT)}: {len(segments)}")
                 else:
@@ -325,18 +478,36 @@ class AnalysisPipeline:
 
     @staticmethod
     def _compute_duration(
+        audio_path: Path,
         segments: List[TranscribedSegment],
         detections: List[Detection],
     ) -> float:
-        """Estimate audio duration from the latest segment or detection end time.
+        """Determine audio duration.
+
+        Tries to read the actual duration from the WAV header first.
+        Falls back to estimating from the latest segment/detection end
+        time if the header cannot be read.
 
         Args:
+            audio_path: Path to the audio file.
             segments: Transcribed segments.
             detections: All detections.
 
         Returns:
-            Estimated duration in seconds.
+            Duration in seconds.
         """
+        # Try reading actual duration from WAV header.
+        try:
+            import wave
+            with wave.open(str(audio_path), "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    return frames / rate
+        except Exception:
+            log.debug("Could not read WAV header for duration; estimating from content.")
+
+        # Fallback: estimate from content.
         duration = 0.0
         if segments:
             duration = max(segment.end for segment in segments)
@@ -348,6 +519,24 @@ class AnalysisPipeline:
 # ===========================
 # MODULE-LEVEL HELPERS
 # ===========================
+
+
+def _seg_to_dict(seg: TranscribedSegment) -> dict:
+    """Convert a TranscribedSegment to a plain dict for IPC serialisation."""
+    return {
+        "text": seg.text,
+        "start": round(seg.start, 2),
+        "end": round(seg.end, 2),
+        "words": [
+            {
+                "word": w.word,
+                "start": round(w.start, 2),
+                "end": round(w.end, 2),
+                "confidence": round(w.confidence, 3),
+            }
+            for w in seg.words
+        ],
+    }
 
 
 def _deduplicate(detections: List[Detection]) -> List[Detection]:
@@ -425,38 +614,58 @@ def _old_events_cache_path(audio_path: Path) -> Path:
     return audio_path.with_suffix(audio_path.suffix + ".events_cache.json")
 
 
-def _save_intermediate_stt(audio_path: Path, segments: List[TranscribedSegment]) -> None:
-    """Save STT results to an intermediate cache file."""
+def _save_intermediate_stt(
+    audio_path: Path,
+    segments: List[TranscribedSegment],
+    *,
+    completed: bool = False,
+) -> None:
+    """Save STT results to an intermediate cache file.
+
+    Args:
+        audio_path: Path to the audio file.
+        segments: Transcribed segments so far.
+        completed: True only when STT finished the entire file.
+    """
     cache_path = _stt_cache_path(audio_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data = [
-            {
-                "text": seg.text,
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
-                "words": [
-                    {
-                        "word": w.word,
-                        "start": round(w.start, 2),
-                        "end": round(w.end, 2),
-                        "confidence": round(w.confidence, 3),
-                    }
-                    for w in seg.words
-                ],
-            }
-            for seg in segments
-        ]
+        data = {
+            "completed": completed,
+            "segments": [
+                {
+                    "text": seg.text,
+                    "start": round(seg.start, 2),
+                    "end": round(seg.end, 2),
+                    "words": [
+                        {
+                            "word": w.word,
+                            "start": round(w.start, 2),
+                            "end": round(w.end, 2),
+                            "confidence": round(w.confidence, 3),
+                        }
+                        for w in seg.words
+                    ],
+                }
+                for seg in segments
+            ],
+        }
         tmp = cache_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(cache_path)
-        log.info("Intermediate STT cache saved: %d segments -> %s", len(segments), cache_path.name)
+        log.info("Intermediate STT cache saved: %d segments (completed=%s) -> %s",
+                 len(segments), completed, cache_path.name)
     except OSError as exc:
         log.warning("Could not save STT cache: %s", exc)
 
 
 def _load_intermediate_stt(audio_path: Path) -> Optional[List[TranscribedSegment]]:
-    """Load previously cached STT results, or None if not available."""
+    """Load previously cached STT results, or None if not available.
+
+    Only returns segments when the cache is marked as *completed* — i.e.
+    the STT pass finished the entire file.  Incomplete (interrupted) caches
+    are discarded so the pipeline re-runs STT from scratch.
+    """
     from .models import TranscribedWord
 
     cache_path = _stt_cache_path(audio_path)
@@ -480,7 +689,23 @@ def _load_intermediate_stt(audio_path: Path) -> Optional[List[TranscribedSegment
     except OSError:
         return None
     try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        # Support both old format (bare list) and new format (dict with
+        # "completed" flag and "segments" list).
+        if isinstance(raw, list):
+            # Legacy format — no completeness info; treat as incomplete.
+            log.info("STT cache is legacy format (no completed flag); will re-run STT.")
+            return None
+        elif isinstance(raw, dict):
+            if not raw.get("completed", False):
+                log.info("STT cache exists but is incomplete (%d segments); will re-run STT.",
+                         len(raw.get("segments", [])))
+                return None
+            seg_list = raw.get("segments", [])
+        else:
+            return None
+
         segments = [
             TranscribedSegment(
                 text=seg["text"],
@@ -494,9 +719,9 @@ def _load_intermediate_stt(audio_path: Path) -> Optional[List[TranscribedSegment
                     for w in seg.get("words", [])
                 ],
             )
-            for seg in data
+            for seg in seg_list
         ]
-        log.info("Loaded intermediate STT cache: %d segments.", len(segments))
+        log.info("Loaded completed STT cache: %d segments.", len(segments))
         return segments
     except (json.JSONDecodeError, KeyError, OSError) as exc:
         log.warning("Failed to load STT cache: %s", exc)

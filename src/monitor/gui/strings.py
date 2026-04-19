@@ -98,13 +98,21 @@ class S:
 
     # --- STT progress ---
     STT_TRANSCRIBING = "stt_transcribing"
+    STT_STARTING = "stt_starting"
     STT_DOWNLOADING = "stt_downloading"
+
+    # --- Toxicity model progress ---
+    TOXICITY_DOWNLOADING = "toxicity_downloading"
 
     # --- Audio events progress ---
     AE_LOADING_AUDIO = "ae_loading_audio"
     AE_CHECKING_VOLUME = "ae_checking_volume"
     AE_ANALYSING_PANNS = "ae_analysing_panns"
     AE_LOADING_MODEL = "ae_loading_model"
+
+    # --- Partial analysis warning ---
+    PARTIAL_WARNING = "partial_warning"
+    AI_PROFANITY_UNAVAILABLE = "ai_profanity_unavailable"
 
     # --- Sensitivity panel ---
     SENSITIVITY_TITLE = "sensitivity_title"
@@ -157,10 +165,10 @@ _STRINGS = {
     (S.PLAYER_FORWARD, Lang.EN):     "⏩",
     (S.PLAYER_VOLUME, Lang.HE):      "🔈",
     (S.PLAYER_VOLUME, Lang.EN):      "🔈",
-    (S.PLAYER_PREV_EVENT, Lang.HE):  "אירוע קודם",
-    (S.PLAYER_PREV_EVENT, Lang.EN):  "Previous event",
-    (S.PLAYER_NEXT_EVENT, Lang.HE):  "אירוע הבא",
-    (S.PLAYER_NEXT_EVENT, Lang.EN):  "Next event",
+    (S.PLAYER_PREV_EVENT, Lang.HE):  "אירוע קודם \u25C0",
+    (S.PLAYER_PREV_EVENT, Lang.EN):  "Previous event \u25C0",
+    (S.PLAYER_NEXT_EVENT, Lang.HE):  "\u25B6 אירוע הבא",
+    (S.PLAYER_NEXT_EVENT, Lang.EN):  "\u25B6 Next event",
 
     # --- Report table ---
     (S.COL_TIME, Lang.HE):           "זמן",
@@ -225,16 +233,20 @@ _STRINGS = {
     (S.PIPE_PROFANITY_SEARCH, Lang.EN):   "Searching for profanity...",
     (S.PIPE_DONE, Lang.HE):               "הניתוח הושלם!",
     (S.PIPE_DONE, Lang.EN):               "Analysis complete!",
-    (S.PIPE_STT_START, Lang.HE):          "מתחיל תמלול...",
-    (S.PIPE_STT_START, Lang.EN):          "Starting transcription...",
+    (S.PIPE_STT_START, Lang.HE):          "סורק את ההקלטה לזיהוי קטעי דיבור...",
+    (S.PIPE_STT_START, Lang.EN):          "Scanning audio for speech segments...",
     (S.PIPE_EVENTS_START, Lang.HE):       "מתחיל זיהוי אירועים...",
     (S.PIPE_EVENTS_START, Lang.EN):       "Starting event detection...",
 
     # --- STT progress ---
     (S.STT_TRANSCRIBING, Lang.HE):   "מתמלל...",
     (S.STT_TRANSCRIBING, Lang.EN):   "Transcribing...",
+    (S.STT_STARTING, Lang.HE):       "מתחיל תמלול...",
+    (S.STT_STARTING, Lang.EN):       "Starting transcription...",
     (S.STT_DOWNLOADING, Lang.HE):    "מוריד מודל תמלול (~1.5 GB)...",
     (S.STT_DOWNLOADING, Lang.EN):    "Downloading STT model (~1.5 GB)...",
+    (S.TOXICITY_DOWNLOADING, Lang.HE): "מוריד מודל זיהוי ניבול פה (~700 MB)...",
+    (S.TOXICITY_DOWNLOADING, Lang.EN): "Downloading toxicity model (~700 MB)...",
 
     # --- Audio events progress ---
     (S.AE_LOADING_AUDIO, Lang.HE):   "טוען שמע...",
@@ -247,6 +259,12 @@ _STRINGS = {
     (S.AE_LOADING_MODEL, Lang.EN):   "Loading PANNs model into memory...",
 
     # --- Sensitivity panel ---
+    # --- Partial analysis warning ---
+    (S.PARTIAL_WARNING, Lang.HE):    "⚠ ניתוח בתהליך — התוצאות המוצגות חלקיות",
+    (S.PARTIAL_WARNING, Lang.EN):    "⚠ Analysis in progress — results shown are partial",
+    (S.AI_PROFANITY_UNAVAILABLE, Lang.HE): "⚠ מודל AI לזיהוי ניבול פה לא זמין — זיהוי מילים בלבד",
+    (S.AI_PROFANITY_UNAVAILABLE, Lang.EN): "⚠ AI profanity model unavailable — word-list detection only",
+
     (S.SENSITIVITY_TITLE, Lang.HE):  "⚙ רגישות",
     (S.SENSITIVITY_TITLE, Lang.EN):  "⚙ Sensitivity",
     (S.SENSITIVITY_LOW, Lang.HE):    "לא רגיש",

@@ -8,7 +8,7 @@ download into the local ``models/`` folder rather than the user's home.
 Layout:
     <project_root>/
         models/
-            huggingface/     <- HF_HOME (Whisper STT, OpenCensor, etc.)
+            huggingface/     <- HF_HOME (Whisper STT, toxicity model, etc.)
             panns/           <- PANNs checkpoint + labels CSV
 
 Usage:

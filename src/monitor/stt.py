@@ -354,6 +354,7 @@ class HebrewSTT:
         *,
         vad_filter: bool = True,
         on_progress: Optional[Callable[[int, str], None]] = None,
+        on_segment: Optional[Callable[["TranscribedSegment"], None]] = None,
     ) -> List[TranscribedSegment]:
         """Transcribe an audio file and return segments with word-level timestamps.
 
@@ -361,6 +362,8 @@ class HebrewSTT:
             audio_path: Path to audio file (WAV, MP3, M4A, FLAC, etc.).
             vad_filter: Use Silero-VAD to skip silent regions (default True).
             on_progress: Optional callback(percent, label) for progress updates.
+            on_segment: Optional callback(TranscribedSegment) fired after each
+                segment is transcribed, for incremental live display.
 
         Returns:
             List of TranscribedSegment, each containing words with timestamps.
@@ -379,6 +382,10 @@ class HebrewSTT:
         t0 = time.perf_counter()
         log.info("STT.transcribe: start file=%s vad=%s", audio_path, vad_filter)
 
+        # Show scanning message before the blocking VAD scan.
+        if on_progress:
+            on_progress(1, tr(S.PIPE_STT_START))
+
         # Use BatchedInferencePipeline for parallel decoding of VAD chunks.
         batch_size = max(1, (os.cpu_count() or 4) // 2)
         raw_segments, info = self._batched_model.transcribe(
@@ -392,7 +399,7 @@ class HebrewSTT:
 
         total_duration = getattr(info, "duration", 0) or 0
         if on_progress:
-            on_progress(5, tr(S.STT_TRANSCRIBING))
+            on_progress(5, tr(S.STT_STARTING))
 
         segments: List[TranscribedSegment] = []
         for segment in raw_segments:
@@ -414,6 +421,12 @@ class HebrewSTT:
                     words=words,
                 )
             )
+            # Fire incremental callback for live display.
+            if on_segment:
+                try:
+                    on_segment(segments[-1])
+                except Exception:
+                    log.debug("on_segment callback failed", exc_info=True)
             # Report progress based on how far into the audio we've transcribed.
             if on_progress and total_duration > 0:
                 pct = min(95, int(segment.end / total_duration * 95))

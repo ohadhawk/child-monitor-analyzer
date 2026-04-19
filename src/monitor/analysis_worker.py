@@ -36,7 +36,11 @@ log = logging.getLogger(__name__)
 MSG_PROGRESS = "progress"
 MSG_SUB_PROGRESS = "sub_progress"
 MSG_SUB_PROGRESS2 = "sub_progress2"
+MSG_SUB_PROGRESS3 = "sub_progress3"
 MSG_TASK_PROGRESS = "task_progress"
+MSG_PARTIAL_STT = "partial_stt"
+MSG_PARTIAL_EVENTS = "partial_events"
+MSG_WARNING = "warning"
 MSG_FINISHED = "finished"
 MSG_ERROR = "error"
 
@@ -159,11 +163,32 @@ def run_analysis(
                 "done": done, "total": total, "label": label,
             })
 
+        def on_sub_progress3(done: int, total: int, label: str) -> None:
+            _safe_put(queue, {
+                "type": MSG_SUB_PROGRESS3,
+                "done": done, "total": total, "label": label,
+            })
+
         def on_task_progress(task_id: int, pct: int, label: str) -> None:
             _safe_put(queue, {
                 "type": MSG_TASK_PROGRESS,
                 "task_id": task_id, "pct": pct, "label": label,
             })
+
+        def on_partial_stt(segments: list) -> None:
+            _safe_put(queue, {
+                "type": MSG_PARTIAL_STT,
+                "segments": segments,
+            })
+
+        def on_partial_events(detections: list) -> None:
+            _safe_put(queue, {
+                "type": MSG_PARTIAL_EVENTS,
+                "detections": detections,
+            })
+
+        def on_warning(key: str) -> None:
+            _safe_put(queue, {"type": MSG_WARNING, "key": key})
 
         # --- Run the pipeline ---
         pipeline = AnalysisPipeline()
@@ -172,7 +197,11 @@ def run_analysis(
             on_progress=on_progress,
             on_sub_progress=on_sub_progress,
             on_sub_progress2=on_sub_progress2,
+            on_sub_progress3=on_sub_progress3,
             on_task_progress=on_task_progress,
+            on_partial_stt=on_partial_stt,
+            on_partial_events=on_partial_events,
+            on_warning=on_warning,
         )
 
         # Send the result as a serialised dict (safe for cross-process pickling).

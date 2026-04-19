@@ -168,12 +168,15 @@ class AudioEventDetector:
         self,
         audio_path: str | Path,
         on_progress: Optional[Callable[[int, str], None]] = None,
+        on_chunk_detections: Optional[Callable[[List["Detection"]], None]] = None,
     ) -> List[Detection]:
         """Run all audio event detectors on the given file.
 
         Args:
             audio_path: Path to an audio file (WAV, MP3, FLAC, etc.).
             on_progress: Optional callback(percent, label) for progress updates.
+            on_chunk_detections: Optional callback(List[Detection]) fired after
+                each PANNs chunk with preliminary detections for live display.
 
         Returns:
             List of Detection objects sorted by start time.
@@ -196,7 +199,9 @@ class AudioEventDetector:
         if on_progress:
             on_progress(10, tr(S.AE_LOADING_AUDIO))
 
-        detections.extend(self._detect_events_panns(audio_path_str, on_progress))
+        detections.extend(self._detect_events_panns(
+            audio_path_str, on_progress, on_chunk_detections,
+        ))
 
         if on_progress:
             on_progress(80, tr(S.AE_CHECKING_VOLUME))
@@ -222,6 +227,7 @@ class AudioEventDetector:
         self,
         audio_path: str,
         on_progress: Optional[Callable[[int, str], None]] = None,
+        on_chunk_detections: Optional[Callable[[List["Detection"]], None]] = None,
     ) -> List[Detection]:
         """Classify audio events using PANNs SoundEventDetection.
 
@@ -231,6 +237,8 @@ class AudioEventDetector:
         Args:
             audio_path: Path string to the audio file.
             on_progress: Optional callback(percent, label) for progress updates.
+            on_chunk_detections: Optional callback fired after each chunk with
+                preliminary detections (timestamps offset to absolute position).
 
         Returns:
             List of Detection objects for recognised AudioSet classes.
@@ -296,6 +304,41 @@ class AudioEventDetector:
                 chunk_idx + 1, num_chunks,
                 start_sample / sample_rate, end_sample / sample_rate,
             )
+
+            # Fire incremental callback with per-chunk detections for live display.
+            # Skip for padded short chunks (<1s real audio) where timestamp
+            # mapping would be inaccurate due to zero-padding.
+            real_chunk_samples = end_sample - start_sample
+            if on_chunk_detections and real_chunk_samples >= MIN_CHUNK_SAMPLES:
+                try:
+                    chunk_probs = framewise_output[0]  # (num_frames, 527)
+                    chunk_frames = chunk_probs.shape[0]
+                    chunk_duration = (end_sample - start_sample) / sample_rate
+                    chunk_frame_dur = chunk_duration / chunk_frames if chunk_frames > 0 else 0
+                    chunk_offset = start_sample / sample_rate
+                    chunk_dets: List[Detection] = []
+                    for class_name, detection_type in AUDIOSET_CLASS_MAP.items():
+                        try:
+                            class_index = panns_labels.index(class_name)
+                        except ValueError:
+                            continue
+                        dets = self._frames_to_detections(
+                            chunk_probs[:, class_index],
+                            chunk_frame_dur, detection_type, class_name,
+                        )
+                        # Offset timestamps from chunk-local to absolute.
+                        for d in dets:
+                            chunk_dets.append(Detection(
+                                type=d.type,
+                                start=round(d.start + chunk_offset, 2),
+                                end=round(d.end + chunk_offset, 2),
+                                confidence=d.confidence,
+                                details=d.details,
+                            ))
+                    if chunk_dets:
+                        on_chunk_detections(chunk_dets)
+                except Exception:
+                    log.debug("on_chunk_detections callback failed", exc_info=True)
 
         # Concatenate all chunk probabilities.
         probabilities = np.concatenate(all_probabilities, axis=0)  # (total_frames, 527)
