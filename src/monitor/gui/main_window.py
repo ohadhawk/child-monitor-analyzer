@@ -9,7 +9,8 @@ Provides the top-level PySide6 window with:
   - Interactive detection report table (middle)
   - Integrated audio player (bottom)
 
-Analysis runs in a background QThread so the GUI stays responsive.
+Analysis runs in a background subprocess so the GUI stays responsive
+and analysis can be cancelled instantly when switching files.
 
 Usage:
     from monitor.gui.main_window import run_gui
@@ -21,16 +22,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
+import queue as _queue_mod  # for queue.Empty
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import (
-    QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot,
+    QSettings, Qt, QTimer, QUrl, Slot,
     QtMsgType, qInstallMessageHandler,
 )
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -47,9 +50,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..analysis_worker import (
+    run_analysis,
+    MSG_PROGRESS, MSG_SUB_PROGRESS, MSG_SUB_PROGRESS2,
+    MSG_TASK_PROGRESS, MSG_FINISHED, MSG_ERROR,
+)
 from ..model_cache import setup_model_environment
 from ..models import AnalysisReport
-from ..pipeline import AnalysisPipeline
 from .audio_player import AudioPlayerWidget
 from .report_table import ReportTableWidget
 from .sensitivity_panel import SensitivityDialog
@@ -91,54 +98,6 @@ SETTINGS_APP = "monitor-gui"
 SETTINGS_RECENT_KEY = "recent_files"
 
 # ===========================
-# BACKGROUND WORKER
-# ===========================
-
-
-class _AnalysisWorker(QObject):
-    """Runs the analysis pipeline in a background thread.
-
-    Signals:
-        progress: Emitted with (percent, hebrew_message).
-        sub_progress: Emitted with (bytes_done, bytes_total, label).
-        task_progress: Emitted with (task_id, percent, label) for parallel tasks.
-        finished: Emitted with the completed AnalysisReport.
-        error: Emitted with error message string on failure.
-    """
-
-    progress = Signal(int, str)
-    # Use object (not int) for byte counts: int32 (PySide's default) overflows
-    # at 2.1 GB, but our STT download can exceed 3 GB. object passes Python
-    # ints through without truncation.
-    sub_progress = Signal(object, object, str)
-    sub_progress2 = Signal(object, object, str)
-    task_progress = Signal(int, int, str)
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, pipeline: AnalysisPipeline, audio_path: str) -> None:
-        super().__init__()
-        self._pipeline = pipeline
-        self._audio_path = audio_path
-
-    @Slot()
-    def run(self) -> None:
-        """Execute the analysis pipeline and emit results."""
-        try:
-            report = self._pipeline.analyze(
-                self._audio_path,
-                on_progress=lambda pct, msg: self.progress.emit(pct, msg),
-                on_sub_progress=lambda d, t, l: self.sub_progress.emit(d, t, l),
-                on_sub_progress2=lambda d, t, l: self.sub_progress2.emit(d, t, l),
-                on_task_progress=lambda tid, pct, l: self.task_progress.emit(tid, pct, l),
-            )
-            self.finished.emit(report)
-        except Exception as exc:
-            log.exception("Analysis failed for %s", self._audio_path)
-            self.error.emit(str(exc))
-
-
-# ===========================
 # MAIN WINDOW
 # ===========================
 
@@ -150,8 +109,8 @@ class MainWindow(QMainWindow):
     history (up to MAX_RECENT_FILES entries) persisted across sessions.
 
     Attributes:
-        _pipeline: The analysis pipeline instance.
-        _worker_thread: Background thread for analysis (if running).
+        _worker_process: Subprocess running the analysis (if active).
+        _worker_queue: Queue for receiving progress/results from subprocess.
         _current_audio: Path to the currently loaded audio file.
         _recent_files: Ordered list of recently opened file paths (newest first).
     """
@@ -162,10 +121,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
 
-        self._pipeline = AnalysisPipeline()
-        self._worker_thread: Optional[QThread] = None
+        self._worker_process: Optional[multiprocessing.Process] = None
+        self._worker_queue: Optional[multiprocessing.Queue] = None
         self._current_audio: Optional[str] = None
         self._current_report: Optional[AnalysisReport] = None
+
+        # Timer to poll the subprocess queue for progress/results.
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(50)  # 50 ms
+        self._poll_timer.timeout.connect(self._poll_worker_queue)
 
         # Enable drag-and-drop on the main window.
         self.setAcceptDrops(True)
@@ -314,7 +278,7 @@ class MainWindow(QMainWindow):
 
         self._lbl_file = QLabel(tr(S.NO_FILE_SELECTED))
         self._lbl_file.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
 
         self._btn_analyze = QPushButton(tr(S.ANALYSE))
@@ -366,6 +330,15 @@ class MainWindow(QMainWindow):
                 event.acceptProposedAction()
                 return
         event.ignore()
+
+    # ------------------------------------------------------------------
+    # Window close
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        """Clean up the analysis subprocess before closing."""
+        self._stop_previous_analysis()
+        event.accept()
 
     # ------------------------------------------------------------------
     # Recent files
@@ -456,13 +429,25 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, tr(S.FILE_NOT_FOUND),
                                 tr(S.FILE_NOT_FOUND_MSG).format(path=file_path))
             return
+        self._stop_previous_analysis()
         self._current_audio = file_path
-        self._lbl_file.setText(Path(file_path).name)
+        self._lbl_file.setText(str(Path(file_path)))
         self._btn_analyze.setEnabled(True)
         self._audio_player.load(file_path)
         self._add_to_recent(file_path)
         # Hide the drop-hint once a file is loaded.
         self._lbl_drop_hint.setVisible(False)
+        # Clear all progress bars from a previous incomplete analysis.
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setValue(0)
+        self._sub_progress_bar.setVisible(False)
+        self._sub_progress_bar.setValue(0)
+        self._sub_progress_bar2.setVisible(False)
+        self._sub_progress_bar2.setValue(0)
+        for bar in self._task_bars:
+            bar.setVisible(False)
+            bar.setValue(0)
+        self._lbl_status.setVisible(False)
         log.info("Audio file loaded: %s", file_path)
 
         # Try to load a cached analysis report.
@@ -514,21 +499,40 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _stop_previous_analysis(self) -> None:
-        """Stop any running analysis thread before starting a new one."""
-        if self._worker_thread is not None and self._worker_thread.isRunning():
-            log.info("Stopping previous analysis thread...")
-            self._worker_thread.quit()
-            if not self._worker_thread.wait(3000):
-                log.warning("Previous thread did not stop in time; terminating.")
-                self._worker_thread.terminate()
-                self._worker_thread.wait()
-            log.info("Previous analysis thread stopped.")
-        self._worker_thread = None
-        self._worker = None
+        """Terminate any running analysis subprocess."""
+        self._poll_timer.stop()
+        if self._worker_process is not None and self._worker_process.is_alive():
+            pid = self._worker_process.pid
+            log.info("Terminating analysis subprocess (PID %s)...", pid)
+            try:
+                self._worker_process.terminate()
+                self._worker_process.join(timeout=3)
+                # On Windows, terminate() calls TerminateProcess which is
+                # always immediate.  kill() is only meaningful on POSIX.
+                if self._worker_process.is_alive():
+                    log.warning("Subprocess still alive after terminate; killing (PID %s).", pid)
+                    self._worker_process.kill()
+                    self._worker_process.join(timeout=2)
+            except Exception:
+                log.exception("Error terminating analysis subprocess (PID %s).", pid)
+            log.info("Analysis subprocess terminated (PID %s).", pid)
+
+        # Clean up the queue.  cancel_join_thread() prevents a
+        # deadlock: join_thread() would block if the feeder thread is
+        # stuck flushing to a broken pipe after terminate().
+        if self._worker_queue is not None:
+            try:
+                self._worker_queue.close()
+                self._worker_queue.cancel_join_thread()
+            except Exception:
+                pass  # Queue may already be broken after terminate
+
+        self._worker_process = None
+        self._worker_queue = None
 
     @Slot()
     def _start_analysis(self, *, force_restart: bool = False) -> None:
-        """Launch the analysis pipeline in a background thread.
+        """Launch the analysis pipeline in a subprocess.
 
         Args:
             force_restart: If True, clears intermediate caches to force
@@ -551,23 +555,96 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
 
-        self._worker_thread = QThread()
-        self._worker = _AnalysisWorker(self._pipeline, self._current_audio)
-        self._worker.moveToThread(self._worker_thread)
+        try:
+            self._worker_queue = multiprocessing.Queue()
+            self._worker_process = multiprocessing.Process(
+                target=run_analysis,
+                args=(self._current_audio, self._worker_queue),
+                daemon=True,
+            )
+            self._worker_process.start()
+            self._poll_timer.start()
+            log.info(
+                "Analysis subprocess started (PID %s) for %s",
+                self._worker_process.pid, self._current_audio,
+            )
+        except Exception as exc:
+            log.exception("Failed to start analysis subprocess.")
+            # Clean up partial state so buttons are re-enabled.
+            self._worker_process = None
+            self._worker_queue = None
+            self._btn_analyze.setEnabled(True)
+            self._btn_open.setEnabled(True)
+            self._progress_bar.setVisible(False)
+            self._on_error(f"Failed to start analysis: {exc}")
 
-        # QThread signal wiring: started -> run; finished/error -> quit thread.
-        self._worker_thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.sub_progress.connect(self._on_sub_progress)
-        self._worker.sub_progress2.connect(self._on_sub_progress2)
-        self._worker.task_progress.connect(self._on_task_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._worker_thread.quit)
-        self._worker.error.connect(self._worker_thread.quit)
+    # ------------------------------------------------------------------
+    # Subprocess queue polling
+    # ------------------------------------------------------------------
 
-        self._worker_thread.start()
-        log.info("Analysis started for %s", self._current_audio)
+    @Slot()
+    def _poll_worker_queue(self) -> None:
+        """Drain pending messages from the subprocess queue.
+
+        Called every 50 ms by _poll_timer.  Dispatches each message to
+        the appropriate handler and detects subprocess crashes.
+        """
+        if self._worker_queue is None or self._worker_process is None:
+            self._poll_timer.stop()
+            return
+
+        # Drain all available messages.
+        try:
+            while True:
+                try:
+                    msg = self._worker_queue.get_nowait()
+                except _queue_mod.Empty:
+                    break
+                self._handle_worker_message(msg)
+                # Stop polling after terminal messages.
+                if msg.get("type") in (MSG_FINISHED, MSG_ERROR):
+                    return
+        except Exception:
+            log.exception("Error reading from worker queue.")
+
+        # Detect subprocess crash (died without sending finished/error).
+        if self._worker_process is not None and not self._worker_process.is_alive():
+            exitcode = self._worker_process.exitcode
+            self._poll_timer.stop()
+            log.error(
+                "Analysis subprocess died unexpectedly (PID %s, exit code %s).",
+                self._worker_process.pid, exitcode,
+            )
+            self._on_error(
+                f"Analysis process crashed unexpectedly (exit code {exitcode})."
+            )
+
+    def _handle_worker_message(self, msg: dict) -> None:
+        """Dispatch a single message from the subprocess queue."""
+        msg_type = msg.get("type")
+        try:
+            if msg_type == MSG_PROGRESS:
+                self._on_progress(msg["pct"], msg["msg"])
+            elif msg_type == MSG_SUB_PROGRESS:
+                self._on_sub_progress(msg["done"], msg["total"], msg["label"])
+            elif msg_type == MSG_SUB_PROGRESS2:
+                self._on_sub_progress2(msg["done"], msg["total"], msg["label"])
+            elif msg_type == MSG_TASK_PROGRESS:
+                self._on_task_progress(msg["task_id"], msg["pct"], msg["label"])
+            elif msg_type == MSG_FINISHED:
+                report = AnalysisReport.from_dict(msg["report"])
+                self._poll_timer.stop()
+                self._on_finished(report)
+            elif msg_type == MSG_ERROR:
+                tb = msg.get("traceback", "")
+                if tb:
+                    log.error("Subprocess traceback:\n%s", tb)
+                self._poll_timer.stop()
+                self._on_error(msg["msg"])
+            else:
+                log.warning("Unknown worker message type: %r", msg_type)
+        except Exception:
+            log.exception("Error handling worker message: %r", msg)
 
     @Slot(int, str)
     def _on_progress(self, pct: int, msg: str) -> None:
@@ -667,6 +744,10 @@ class MainWindow(QMainWindow):
         Args:
             report: The completed AnalysisReport.
         """
+        # Guard against stale messages processed after subprocess was stopped.
+        if self._worker_process is None:
+            log.info("Ignoring stale finished message (process already stopped).")
+            return
         self._progress_bar.setVisible(False)
         self._sub_progress_bar.setVisible(False)
         self._sub_progress_bar2.setVisible(False)
@@ -675,6 +756,9 @@ class MainWindow(QMainWindow):
         self._lbl_status.setVisible(False)
         self._btn_analyze.setEnabled(True)
         self._btn_open.setEnabled(True)
+        # Clean up process/queue references now that analysis is done.
+        self._worker_process = None
+        self._worker_queue = None
         self._current_report = report
         self._apply_sensitivity_filter()
         self._transcript.load_segments(report.segments, report.detections)
@@ -689,6 +773,9 @@ class MainWindow(QMainWindow):
         Args:
             error_msg: Description of the error.
         """
+        if self._worker_process is None:
+            log.info("Ignoring stale error message (process already stopped).")
+            return
         self._progress_bar.setVisible(False)
         self._sub_progress_bar.setVisible(False)
         self._sub_progress_bar2.setVisible(False)
@@ -697,6 +784,9 @@ class MainWindow(QMainWindow):
         self._lbl_status.setText(f"{tr(S.ERROR)}: {error_msg}")
         self._btn_analyze.setEnabled(True)
         self._btn_open.setEnabled(True)
+        # Clean up process/queue references now that analysis is done.
+        self._worker_process = None
+        self._worker_queue = None
         QMessageBox.critical(self, tr(S.ERROR),
                              tr(S.ANALYSIS_FAILED).format(msg=error_msg))
         log.error("Analysis failed: %s", error_msg)
@@ -776,7 +866,7 @@ def _setup_logging(debug: bool, log_dir: Path) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"monitor_{timestamp}.log"
 
-    fmt = "%(asctime)s [%(levelname)s] [%(threadName)s] %(name)s: %(message)s"
+    fmt = "%(asctime)s [%(levelname)s] [%(threadName)s] %(pathname)s: %(message)s"
 
     # Root logger: keep at WARNING to silence noisy third-party libs.
     root_logger = logging.getLogger()
@@ -862,6 +952,9 @@ def _install_crash_handlers() -> None:
 
 def run_gui() -> None:
     """Launch the GUI application."""
+    # Required for multiprocessing on Windows (especially PyInstaller).
+    multiprocessing.freeze_support()
+
     args = _parse_gui_args()
 
     # In debug mode, allocate a console window (useful for PyInstaller --windowed).

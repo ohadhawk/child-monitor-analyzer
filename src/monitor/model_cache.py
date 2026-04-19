@@ -161,7 +161,7 @@ def _download_file(
 
     log.info("Downloading %s from %s ...", label, url)
 
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, timeout=60) as response:
         # If the server supports Range, it returns 206 with Content-Range.
         # Otherwise it returns 200 and we must restart from scratch.
         status = getattr(response, "status", 200)

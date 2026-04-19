@@ -181,24 +181,26 @@ class AudioPlayerWidget(QWidget):
         self._volume_slider.setRange(0, 100)
         self._volume_slider.setValue(70)
         self._volume_slider.setFixedWidth(80)
+        self._volume_slider.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._lbl_volume = QLabel()
         self._lbl_volume.setPixmap(icon_volume().pixmap(20, 20))
 
     def _build_layout(self) -> None:
         """Arrange controls into the widget layout."""
-        controls_row = QHBoxLayout()
-        controls_row.addWidget(self._btn_forward)
-        controls_row.addWidget(self._btn_play)
-        controls_row.addWidget(self._btn_back)
-        controls_row.addStretch()
-        # Event-navigation buttons centred over the seek slider below.
-        # The layout direction is RTL, so widgets added first appear on the
-        # RIGHT. To show "prev" on the left of "next", add "next" first.
-        controls_row.addWidget(self._btn_next_event)
-        controls_row.addWidget(self._btn_prev_event)
-        controls_row.addStretch()
+        # Use a wrapper widget so we can force LTR on the controls row.
+        controls_widget = QWidget()
+        controls_widget.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        controls_row = QHBoxLayout(controls_widget)
+        controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.addWidget(self._lbl_volume)
         controls_row.addWidget(self._volume_slider)
+        controls_row.addSpacing(16)
+        controls_row.addWidget(self._btn_back)
+        controls_row.addWidget(self._btn_play)
+        controls_row.addWidget(self._btn_forward)
+        controls_row.addStretch()
+        controls_row.addWidget(self._btn_prev_event)
+        controls_row.addWidget(self._btn_next_event)
 
         seek_row = QHBoxLayout()
         seek_row.addWidget(self._seek_slider)
@@ -206,7 +208,7 @@ class AudioPlayerWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.addLayout(controls_row)
+        layout.addWidget(controls_widget)
         layout.addLayout(seek_row)
 
     def _connect_signals(self) -> None:

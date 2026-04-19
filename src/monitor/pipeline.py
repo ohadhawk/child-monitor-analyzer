@@ -117,6 +117,21 @@ class AnalysisPipeline:
                 f"Absolute path: {audio_path.resolve()}"
             )
 
+        return self._analyze_impl(
+            audio_path, on_progress, on_sub_progress,
+            on_sub_progress2, on_task_progress,
+        )
+
+    def _analyze_impl(
+        self,
+        audio_path: Path,
+        on_progress: Optional[ProgressCallback],
+        on_sub_progress: Optional[SubProgressCallback],
+        on_sub_progress2: Optional[SubProgressCallback],
+        on_task_progress: Optional[TaskProgressCallback],
+    ) -> AnalysisReport:
+        """Inner analyze body."""
+
         def _progress(pct: int, msg: str) -> None:
             if on_progress:
                 on_progress(pct, msg)

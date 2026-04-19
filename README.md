@@ -472,7 +472,7 @@ pyinstaller --noconfirm monitor-gui.spec
 
 The executable and all dependencies will be in `dist/monitor-gui/`.
 
-> **Note:** The first run will still download ML models (~2.3 GB total) unless
+> **Note:** The first run will still download ML models (~1.8 GB total) unless
 > you pre-bundle them. See the PyInstaller spec file for model bundling options.
 
 Alternatively, build without the spec file:

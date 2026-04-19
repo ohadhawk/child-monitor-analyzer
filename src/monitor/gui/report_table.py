@@ -486,6 +486,9 @@ class ReportTableWidget(QWidget):
 
         self._update_header_indicators()
 
+        # Default sort: time ascending.
+        self._table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
         layout.addWidget(self._table, stretch=1)
 
     def _update_header_indicators(self) -> None:
@@ -604,6 +607,8 @@ class ReportTableWidget(QWidget):
         # cooldown in _on_header_clicked can detect re-clicks.
         self._popup_closed_column = self._active_popup_column
         self._popup_closed_time = time.monotonic()
+        if self._active_popup is not None:
+            self._active_popup.deleteLater()
         self._active_popup = None
         self._active_popup_column = -1
 

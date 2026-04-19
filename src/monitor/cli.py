@@ -158,7 +158,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     # Configure logging -- verbose flag sets DEBUG level.
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format="%(asctime)s [%(levelname)s] %(pathname)s: %(message)s",
     )
 
     log.info("Starting analysis of %s", args.audio)

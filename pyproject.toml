@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "child-monitor-analyzer"
-version = "0.1.0"
+version = "1.1.0"
 description = "Child audio monitoring tool — detects profanity, shouting, crying and more with precise timestamps"
 requires-python = ">=3.10"
 dependencies = [

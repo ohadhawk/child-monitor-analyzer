@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -96,6 +97,7 @@ class AudioEventDetector:
     def __init__(self, confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> None:
         self._confidence_threshold = confidence_threshold
         self._sed_model = None
+        self._load_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Private helpers -- model loading
@@ -111,6 +113,14 @@ class AudioEventDetector:
             on_sub_progress: Optional callback(done, total, label) for download
                 progress. Threaded to model_cache download helpers.
         """
+        with self._load_lock:
+            self._load_sed_locked(on_sub_progress)
+
+    def _load_sed_locked(
+        self,
+        on_sub_progress: Optional[Callable[[int, int, str], None]] = None,
+    ) -> None:
+        """Inner SED model load, called while holding _load_lock."""
         if self._sed_model is not None:
             log.debug("PANNs SED model already loaded; skipping.")
             return
@@ -251,10 +261,20 @@ class AudioEventDetector:
         all_probabilities: List[np.ndarray] = []
         total_frames = 0
 
+        # Minimum chunk length required by PANNs CNN layers (pooling
+        # reduces the time dimension through several stages; anything
+        # shorter than ~1 s at 32 kHz causes "output size too small").
+        MIN_CHUNK_SAMPLES = PANNS_SR  # 1 second
+
         for chunk_idx in range(num_chunks):
             start_sample = chunk_idx * chunk_samples
             end_sample = min(start_sample + chunk_samples, total_samples)
             chunk = audio[start_sample:end_sample]
+
+            # Pad a short tail chunk with zeros so the CNN layers don't
+            # choke on a tiny input.
+            if len(chunk) < MIN_CHUNK_SAMPLES:
+                chunk = np.pad(chunk, (0, MIN_CHUNK_SAMPLES - len(chunk)))
 
             chunk_input = chunk[np.newaxis, :]  # (1, samples)
             framewise_output = self._sed_model.inference(chunk_input)

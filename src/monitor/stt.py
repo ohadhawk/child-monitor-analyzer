@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -69,6 +70,7 @@ class HebrewSTT:
         self._compute_type = compute_type
         self._model = None
         self._batched_model = None
+        self._load_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -84,6 +86,14 @@ class HebrewSTT:
             on_sub_progress: Optional callback(done, total, label) for download
                 progress. total=0 means indeterminate.
         """
+        with self._load_lock:
+            self._load_model_locked(on_sub_progress)
+
+    def _load_model_locked(
+        self,
+        on_sub_progress: Optional[Callable[[int, int, str], None]] = None,
+    ) -> None:
+        """Inner model load, called while holding _load_lock."""
         if self._model is not None:
             log.debug("STT model already loaded; skipping.")
             return
@@ -93,7 +103,7 @@ class HebrewSTT:
         import faster_whisper
 
         log.info(
-            "Loading STT model %s (device=%s) -- first run downloads ~3 GB...",
+            "Loading STT model %s (device=%s) -- first run downloads ~1.5 GB...",
             self._model_name,
             self._device,
         )
@@ -167,106 +177,169 @@ class HebrewSTT:
                 return str(stt_dir)
 
             # Build custom tqdm class that forwards byte progress to GUI.
-            # snapshot_download creates one tqdm instance per file (7 files),
-            # so we need a shared accumulator to give a smooth aggregate bar.
+            # snapshot_download creates a single tqdm for all files.
+            # HF Hub reuses ONE tqdm instance, mutating self.total as
+            # it learns each file's Content-Length via HTTP headers.
+            # The final self.total reflects the real total (~1.5 GB for
+            # the CT2 model). We simply forward self.n / self.total to
+            # the GUI, skipping updates until the total looks plausible
+            # (> 1 MB) to avoid a brief junk percentage during the tiny
+            # config/tokenizer files.
             tqdm_cls = None
             if on_sub_progress:
                 on_sub_progress(0, 0, tr(S.STT_DOWNLOADING))
 
-                from tqdm import tqdm as _tqdm_base
                 import threading as _threading
+                from tqdm import tqdm as _tqdm_base
 
-                # Shared mutable state across all tqdm instances spawned by
-                # snapshot_download for this batch.
-                # file_totals/file_downloaded are keyed by id(tqdm_instance).
-                # Only byte-unit tqdms are tracked; the outer "Fetching N
-                # files" tqdm (unit='it') is ignored entirely.
-                # huggingface_hub uses a worker pool, so concurrent updates
-                # from multiple threads must be serialized with a lock.
-                _shared: dict = {"file_totals": {}, "file_downloaded": {}}
-                _shared_lock = _threading.Lock()
+                # Minimum total before we report progress, to skip the
+                # brief phase where total=357 (a tiny config file).
+                _MIN_TOTAL = 1_000_000  # 1 MB
+                # Throttle GUI updates to avoid signal flood.
+                _REPORT_INTERVAL = 0.25  # seconds between GUI updates
 
                 class _ProgressTqdm(_tqdm_base):
-                    """Aggregates per-file byte progress into a single bar.
+                    """Forwards tqdm progress to the GUI sub-progress bar.
 
-                    Tracks each byte-unit tqdm independently so that tqdms
-                    whose total size is unknown at creation time (HF Hub
-                    reports Content-Length later) don't corrupt the aggregated
-                    percentage with a near-zero denominator.
+                    HF Hub creates ONE bytes_progress bar (this class)
+                    with total=0, unit='B'.  Per-file _AggregatedTqdm
+                    instances call bytes_progress.update(n) from
+                    MULTIPLE download threads concurrently.
+
+                    tqdm's self.n += n is NOT thread-safe (4 bytecodes,
+                    GIL can preempt between them), so we use our own
+                    lock-protected counter to track actual progress.
+
+                    IMPORTANT: close() must NOT call on_sub_progress
+                    because Python GC may call it AFTER the pipeline
+                    has already hidden the bar via _sub(-1,-1,""),
+                    which would re-show the bar during transcription.
                     """
 
                     def __init__(self, *args, **kwargs):
                         super().__init__(*args, **kwargs)
-                        log.debug(
+                        self._lock = _threading.Lock()
+                        self._actual_downloaded = 0
+                        self._actual_total = 0
+                        self._last_report_time = 0.0
+                        self._last_reported_downloaded = -1
+                        self._last_reported_total = -1
+                        self._update_count = 0
+                        self._reported_count = 0
+                        self._skipped_count = 0
+                        log.info(
                             "tqdm.__init__ id=%d unit=%r total=%r desc=%r",
                             id(self), getattr(self, "unit", None),
                             self.total, getattr(self, "desc", None),
                         )
-                        # Register early only when total is already known.
-                        if getattr(self, "unit", None) == "B" and self.total and self.total > 0:
-                            with _shared_lock:
-                                _shared["file_totals"][id(self)] = self.total
-                                _shared["file_downloaded"][id(self)] = 0
 
                     def update(self, n=1):
-                        super().update(n)  # increments self.n
-                        if not n or n <= 0:
-                            return
-                        # Ignore non-byte tqdms (e.g. "Fetching N files" unit='it').
+                        super().update(n)
                         if getattr(self, "unit", None) != "B":
                             return
-                        myid = id(self)
-                        with _shared_lock:
-                            # huggingface_hub reuses a single tqdm instance
-                            # across multiple files, mutating self.total when
-                            # it learns each file's Content-Length. We must
-                            # therefore re-sync our cached total whenever it
-                            # changes, and reset our per-id downloaded counter
-                            # to self.n (the cumulative byte count tqdm tracks
-                            # for the *current* file).
-                            cur_total = self.total if (self.total and self.total > 0) else 0
-                            cached_total = _shared["file_totals"].get(myid)
-                            if cur_total and cur_total != cached_total:
-                                # New file (or first known total). Promote the
-                                # already-finished previous file's count into
-                                # a stable archive bucket so it isn't lost
-                                # when we overwrite myid's slot.
-                                if cached_total:
-                                    archive_key = (myid, cached_total)
-                                    _shared["file_totals"][archive_key] = cached_total
-                                    _shared["file_downloaded"][archive_key] = (
-                                        _shared["file_downloaded"].get(myid, cached_total)
+                        with self._lock:
+                            self._update_count += 1
+                            # Accumulate our own counter — immune to
+                            # the tqdm self.n += n race condition.
+                            self._actual_downloaded += n
+                            # self.total is also mutated from multiple
+                            # threads (_AggregatedTqdm.__init__ does
+                            # bytes_progress.total += file_size), so
+                            # snapshot it under the lock too.
+                            self._actual_total = self.total or 0
+                            total = self._actual_total
+                            if total < _MIN_TOTAL:
+                                self._skipped_count += 1
+                                if self._skipped_count <= 3:
+                                    log.info(
+                                        "tqdm SKIP #%d: total=%d < %d "
+                                        "(downloaded=%d, chunk=%d)",
+                                        self._skipped_count, total,
+                                        _MIN_TOTAL, self._actual_downloaded, n,
                                     )
-                                _shared["file_totals"][myid] = cur_total
-                                _shared["file_downloaded"][myid] = self.n
-                            elif cur_total:
-                                # Same file, accumulate.
-                                _shared["file_downloaded"][myid] = self.n
-                            else:
-                                # Total still unknown -- skip.
                                 return
-                            total = sum(_shared["file_totals"].values())
-                            downloaded = sum(_shared["file_downloaded"].values())
-                        # Sanity check.
-                        if downloaded > total:
-                            log.warning(
-                                "STT progress overshoot: downloaded=%d > total=%d "
-                                "(file id=%d unit=%r self.total=%r self.n=%d n=%d)",
-                                downloaded, total, id(self),
-                                getattr(self, "unit", None), self.total, self.n, n,
-                            )
+                            downloaded = min(self._actual_downloaded, total)
+                            if (downloaded == self._last_reported_downloaded
+                                    and total == self._last_reported_total):
+                                return
+                            is_done = downloaded >= total
+                            now = time.perf_counter()
+                            if not is_done and (now - self._last_report_time) < _REPORT_INTERVAL:
+                                return
+                            self._last_report_time = now
+                            self._last_reported_downloaded = downloaded
+                            self._last_reported_total = total
+                            self._reported_count += 1
+                            pct = downloaded * 100 // total if total else 0
+                            if self._reported_count <= 5 or self._reported_count % 20 == 0 or is_done:
+                                log.info(
+                                    "tqdm REPORT #%d: %d/%d (%d%%) "
+                                    "[updates=%d skips=%d]",
+                                    self._reported_count, downloaded, total,
+                                    pct, self._update_count, self._skipped_count,
+                                )
+                        # Emit outside lock — on_sub_progress is a Qt
+                        # signal emit which is already thread-safe.
                         on_sub_progress(downloaded, total, tr(S.STT_DOWNLOADING))
+
+                    def close(self):
+                        # Log only — do NOT call on_sub_progress here.
+                        # GC may call close() long after the pipeline
+                        # has hidden the bar, which would re-show it.
+                        with self._lock:
+                            total = self._actual_total
+                            downloaded = min(self._actual_downloaded, total) if total else self._actual_downloaded
+                            log.info(
+                                "tqdm.close: %d/%d [updates=%d reports=%d skips=%d]",
+                                downloaded, total,
+                                self._update_count, self._reported_count,
+                                self._skipped_count,
+                            )
+                        super().close()
 
                 tqdm_cls = _ProgressTqdm
 
             # local_dir copies files directly — no symlinks, no HF cache.
-            snapshot_download(
-                self._model_name,
-                local_dir=str(stt_dir),
-                tqdm_class=tqdm_cls,
-            )
-            log.info("STT model downloaded to %s", stt_dir)
-            return str(stt_dir)
+            # Retry with exponential backoff for transient HF rate-limit
+            # errors (WinError 10054 / ConnectError).
+            _MAX_RETRIES = 3
+            for attempt in range(1, _MAX_RETRIES + 1):
+                try:
+                    snapshot_download(
+                        self._model_name,
+                        local_dir=str(stt_dir),
+                        tqdm_class=tqdm_cls,
+                    )
+                    log.info("STT model downloaded to %s", stt_dir)
+                    return str(stt_dir)
+                except Exception as exc:
+                    log.warning(
+                        "snapshot_download attempt %d/%d failed: %s",
+                        attempt, _MAX_RETRIES, exc,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        wait = 2 ** attempt  # 2, 4 seconds
+                        log.info(
+                            "Retrying STT download in %ds...", wait,
+                        )
+                        if on_sub_progress:
+                            on_sub_progress(
+                                0, 0,
+                                f"{tr(S.STT_DOWNLOADING)} (retry {attempt}/{_MAX_RETRIES}...)",
+                            )
+                        time.sleep(wait)
+                    else:
+                        log.warning(
+                            "All %d download attempts failed; "
+                            "falling back to model name (no progress bar).",
+                            _MAX_RETRIES,
+                        )
+                        if on_sub_progress:
+                            on_sub_progress(
+                                0, 0,
+                                f"{tr(S.STT_DOWNLOADING)} (fallback)...",
+                            )
+                        return None
         except Exception as exc:
             log.warning("Pre-download failed (%s); falling back to model name.", exc)
             return None

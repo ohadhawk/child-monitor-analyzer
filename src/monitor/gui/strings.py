@@ -233,8 +233,8 @@ _STRINGS = {
     # --- STT progress ---
     (S.STT_TRANSCRIBING, Lang.HE):   "מתמלל...",
     (S.STT_TRANSCRIBING, Lang.EN):   "Transcribing...",
-    (S.STT_DOWNLOADING, Lang.HE):    "מוריד מודל תמלול (~3 GB)...",
-    (S.STT_DOWNLOADING, Lang.EN):    "Downloading STT model (~3 GB)...",
+    (S.STT_DOWNLOADING, Lang.HE):    "מוריד מודל תמלול (~1.5 GB)...",
+    (S.STT_DOWNLOADING, Lang.EN):    "Downloading STT model (~1.5 GB)...",
 
     # --- Audio events progress ---
     (S.AE_LOADING_AUDIO, Lang.HE):   "טוען שמע...",

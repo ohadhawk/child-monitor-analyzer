@@ -1,6 +1,10 @@
 # Downloaded ML models (large binary files).
 models/
 models1/
+models2/
+
+# Test scripts (ad-hoc)
+test_subprocess.py
 
 # Python
 __pycache__/
