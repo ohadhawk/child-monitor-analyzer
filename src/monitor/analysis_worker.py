@@ -123,6 +123,7 @@ def run_analysis(
     audio_path: str,
     queue: multiprocessing.Queue,
     log_dir: str | None = None,
+    stt_model_key: str = "thorough",
 ) -> None:
     """Entry point for the analysis subprocess.
 
@@ -191,7 +192,11 @@ def run_analysis(
             _safe_put(queue, {"type": MSG_WARNING, "key": key})
 
         # --- Run the pipeline ---
-        pipeline = AnalysisPipeline()
+        from .stt import DEFAULT_MODEL, TURBO_MODEL
+        stt_model_name = TURBO_MODEL if stt_model_key == "fast" else DEFAULT_MODEL
+        log.info("Using STT model: %s (%s)", stt_model_name, stt_model_key)
+        from .stt import HebrewSTT
+        pipeline = AnalysisPipeline(stt=HebrewSTT(model_name=stt_model_name))
         report = pipeline.analyze(
             audio_path,
             on_progress=on_progress,
@@ -202,6 +207,7 @@ def run_analysis(
             on_partial_stt=on_partial_stt,
             on_partial_events=on_partial_events,
             on_warning=on_warning,
+            stt_model_key=stt_model_key,
         )
 
         # Send the result as a serialised dict (safe for cross-process pickling).

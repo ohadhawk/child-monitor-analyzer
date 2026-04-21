@@ -372,11 +372,26 @@ class TranscriptWidget(QWidget):
         """Scroll to the current search match and update counter."""
         if self._current_match < 0 or self._current_match >= len(self._search_cursors):
             return
-        self._text_edit.setTextCursor(self._search_cursors[self._current_match])
+        cur = self._search_cursors[self._current_match]
+        self._text_edit.setTextCursor(cur)
         self._text_edit.ensureCursorVisible()
         self._lbl_match_count.setText(
             f"{self._current_match + 1}/{len(self._search_cursors)}"
         )
+
+    def _seek_to_current_match(self) -> None:
+        """Seek audio to the timestamp of the current search match."""
+        if self._current_match < 0 or self._current_match >= len(self._search_cursors):
+            return
+        block_num = self._search_cursors[self._current_match].blockNumber()
+        seg_idx = self._block_to_segment.get(block_num)
+        if seg_idx is not None and seg_idx < len(self._segments):
+            seek_pos = max(0.0, self._segments[seg_idx].start - _PLAY_CONTEXT_SECONDS)
+            self.play_requested.emit(seek_pos)
+        else:
+            det_idx = self._block_to_detection.get(block_num)
+            if det_idx is not None and det_idx < len(self._detections):
+                self.play_requested.emit(self._detections[det_idx].start)
 
     def _go_next(self) -> None:
         if not self._search_cursors:
@@ -384,6 +399,7 @@ class TranscriptWidget(QWidget):
         self._current_match = (self._current_match + 1) % len(self._search_cursors)
         self._apply_extra_selections()
         self._scroll_to_current_match()
+        self._seek_to_current_match()
 
     def _go_prev(self) -> None:
         if not self._search_cursors:
@@ -391,3 +407,4 @@ class TranscriptWidget(QWidget):
         self._current_match = (self._current_match - 1) % len(self._search_cursors)
         self._apply_extra_selections()
         self._scroll_to_current_match()
+        self._seek_to_current_match()

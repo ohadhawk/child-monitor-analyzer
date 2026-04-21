@@ -449,6 +449,7 @@ class ReportTableWidget(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         # Vivid selection colour so the auto-highlighted playback row is
         # obvious regardless of OS theme. Also applies to the scrollbar
         # marker so long tables remain readable.

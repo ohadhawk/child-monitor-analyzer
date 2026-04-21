@@ -184,6 +184,7 @@ class AnalysisReport:
     duration_seconds: float = 0.0
     segments: List[TranscribedSegment] = field(default_factory=list)
     detections: List[Detection] = field(default_factory=list)
+    stt_model_key: str = "thorough"
 
     @property
     def full_transcription(self) -> str:
@@ -213,6 +214,7 @@ class AnalysisReport:
         return {
             "audio_path": self.audio_path,
             "duration_seconds": self.duration_seconds,
+            "stt_model_key": self.stt_model_key,
             "transcription": self.full_transcription,
             "segments": [
                 {
@@ -290,6 +292,7 @@ class AnalysisReport:
             duration_seconds=data.get("duration_seconds", 0.0),
             segments=segments,
             detections=detections,
+            stt_model_key=data.get("stt_model_key", "thorough"),
         )
 
     # ------------------------------------------------------------------
@@ -320,20 +323,21 @@ class AnalysisReport:
         )
 
     @staticmethod
-    def get_cache_path(audio_path: str | Path) -> Path:
-        """Return the cache file path for a given audio file.
+    def get_cache_path(audio_path: str | Path, stt_model_key: str = "thorough") -> Path:
+        """Return the cache file path for a given audio file and model.
 
         Cache is stored inside an artifact folder named after the audio
         file (without extension).
 
         Args:
             audio_path: Path to the audio file.
+            stt_model_key: Model key for per-model cache separation.
 
         Returns:
-            Path like ``/dir/recording/analysis.json``.
+            Path like ``/dir/recording/analysis_thorough.json``.
         """
         d = Path(audio_path).parent / Path(audio_path).stem
-        return d / "analysis.json"
+        return d / f"analysis_{stt_model_key}.json"
 
     def save_cache(self) -> Path:
         """Save this report as a JSON cache file in the artifact folder.
@@ -343,7 +347,7 @@ class AnalysisReport:
         Returns:
             Path to the written cache file.
         """
-        cache_path = self.get_cache_path(self.audio_path)
+        cache_path = self.get_cache_path(self.audio_path, self.stt_model_key)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = cache_path.with_suffix(".tmp")
         tmp_path.write_text(
@@ -355,8 +359,12 @@ class AnalysisReport:
         return cache_path
 
     @classmethod
-    def load_cache(cls, audio_path: str | Path) -> Optional[AnalysisReport]:
-        """Load a cached analysis report for the given audio file.
+    def load_cache(
+        cls,
+        audio_path: str | Path,
+        stt_model_key: str = "thorough",
+    ) -> Optional[AnalysisReport]:
+        """Load a cached analysis report for the given audio file and model.
 
         Checks the new artifact folder first, then falls back to the
         legacy location.  If found at the legacy path, migrates the file
@@ -367,24 +375,34 @@ class AnalysisReport:
 
         Args:
             audio_path: Path to the audio file.
+            stt_model_key: Model key for per-model cache separation.
 
         Returns:
             AnalysisReport if a valid cache exists, otherwise None.
         """
         audio_path = Path(audio_path)
-        cache_path = cls.get_cache_path(audio_path)
+        cache_path = cls.get_cache_path(audio_path, stt_model_key)
 
-        # Fall back to legacy path and migrate if needed.
-        if not cache_path.exists():
-            old_path = cls._old_cache_path(audio_path)
-            if old_path.exists():
+        # Fall back to legacy path and migrate if needed (only for default model).
+        if not cache_path.exists() and stt_model_key == "thorough":
+            # Also check model-agnostic name from before per-model caching.
+            old_generic = audio_path.parent / audio_path.stem / "analysis.json"
+            if old_generic.exists():
                 try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    old_path.rename(cache_path)
-                    log.info("Migrated cache %s → %s", old_path, cache_path)
-                except OSError as exc:
-                    log.warning("Cache migration failed: %s", exc)
-                    cache_path = old_path  # read from old location
+                    old_generic.rename(cache_path)
+                    log.info("Migrated analysis cache %s → %s", old_generic, cache_path)
+                except OSError:
+                    cache_path = old_generic
+            else:
+                old_path = cls._old_cache_path(audio_path)
+                if old_path.exists():
+                    try:
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        old_path.rename(cache_path)
+                        log.info("Migrated cache %s → %s", old_path, cache_path)
+                    except OSError as exc:
+                        log.warning("Cache migration failed: %s", exc)
+                        cache_path = old_path  # read from old location
 
         if not cache_path.exists():
             return None

@@ -25,6 +25,7 @@ import logging
 import multiprocessing
 import queue as _queue_mod  # for queue.Empty
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -36,9 +37,11 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -100,6 +103,11 @@ LOG_DIR = Path.home() / ".child-monitor-analyzer" / "logs"
 SETTINGS_ORG = "ChildMonitorAnalyzer"
 SETTINGS_APP = "monitor-gui"
 SETTINGS_RECENT_KEY = "recent_files"
+SETTINGS_STT_MODEL_KEY = "stt_model"
+
+# STT model identifiers (must match values stored in QSettings).
+STT_MODEL_THOROUGH = "thorough"  # ivrit-ai/whisper-large-v3-ct2
+STT_MODEL_FAST = "fast"          # ivrit-ai/whisper-large-v3-turbo-ct2
 
 # ===========================
 # MAIN WINDOW
@@ -133,12 +141,21 @@ class MainWindow(QMainWindow):
         # Accumulated partial results for incremental display.
         self._partial_segments: List["TranscribedSegment"] = []
         self._partial_detections: List["Detection"] = []
+        self._partial_seg_starts: set = set()  # dedup by round(start, 2)
+        self._partial_event_keys: set = set()  # dedup by (start, end, type)
         self._partial_dirty = False  # True when partials need UI refresh
 
         # Timer to poll the subprocess queue for progress/results.
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(50)  # 50 ms
         self._poll_timer.timeout.connect(self._poll_worker_queue)
+
+        # Elapsed time tracking for analysis.
+        self._analysis_start_time: Optional[float] = None
+        self._analysis_elapsed_secs: int = 0
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)  # 1 s
+        self._elapsed_timer.timeout.connect(self._update_elapsed_label)
 
         # Debounce timer for refreshing UI with partial results (2s).
         self._partial_refresh_timer = QTimer(self)
@@ -199,7 +216,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setTextVisible(True)
         layout.addWidget(self._progress_bar)
 
-        # --- Sub-progress bar (download / sub-operation progress) ---
+        # --- Sub-progress bars for downloads (shown during model downloads) ---
         self._sub_progress_bar = QProgressBar()
         self._sub_progress_bar.setRange(0, 100)
         self._sub_progress_bar.setValue(0)
@@ -209,7 +226,6 @@ class MainWindow(QMainWindow):
         self._sub_progress_bar.setStyleSheet(
             "QProgressBar { font-size: 11px; }"
         )
-        layout.addWidget(self._sub_progress_bar)
 
         # --- Second sub-progress bar (shown when two downloads run concurrently) ---
         self._sub_progress_bar2 = QProgressBar()
@@ -221,7 +237,6 @@ class MainWindow(QMainWindow):
         self._sub_progress_bar2.setStyleSheet(
             "QProgressBar { font-size: 11px; }"
         )
-        layout.addWidget(self._sub_progress_bar2)
 
         # --- Third sub-progress bar (toxicity model download) ---
         self._sub_progress_bar3 = QProgressBar()
@@ -233,6 +248,10 @@ class MainWindow(QMainWindow):
         self._sub_progress_bar3.setStyleSheet(
             "QProgressBar { font-size: 11px; }"
         )
+
+        # Add download sub-progress bars before task bars (shown during
+        # model download phase, hidden once models are loaded).
+        layout.addWidget(self._sub_progress_bar2)
         layout.addWidget(self._sub_progress_bar3)
 
         # --- Task progress bars (parallel STT + audio events) ---
@@ -247,6 +266,10 @@ class MainWindow(QMainWindow):
             bar.setFormat(f"{label}: 0%")
             self._task_bars.append(bar)
             layout.addWidget(bar)
+
+        # Sub-progress bar slot 0 is placed AFTER task bars because it is
+        # reused for gap-fill progress (below the STT task bar).
+        layout.addWidget(self._sub_progress_bar)
 
         # --- Sensitivity dialog (created once, shown on button click) ---
         self._sensitivity_dialog = SensitivityDialog(self)
@@ -325,9 +348,22 @@ class MainWindow(QMainWindow):
         self._btn_sensitivity.setFixedHeight(36)
         self._btn_sensitivity.clicked.connect(self._open_sensitivity_dialog)
 
-        self._lbl_file = QLabel(tr(S.NO_FILE_SELECTED))
-        self._lbl_file.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        # STT model selector.
+        self._cmb_stt_model = QComboBox()
+        self._cmb_stt_model.setFixedHeight(36)
+        self._cmb_stt_model.addItem("מודל תמלול: יסודי", STT_MODEL_THOROUGH)
+        self._cmb_stt_model.addItem("מודל תמלול: מהיר", STT_MODEL_FAST)
+        saved_model = self._settings.value(SETTINGS_STT_MODEL_KEY, STT_MODEL_THOROUGH)
+        idx = self._cmb_stt_model.findData(saved_model)
+        if idx >= 0:
+            self._cmb_stt_model.setCurrentIndex(idx)
+        self._cmb_stt_model.currentIndexChanged.connect(self._on_stt_model_changed)
+
+        self._lbl_file = QLineEdit(tr(S.NO_FILE_SELECTED))
+        self._lbl_file.setReadOnly(True)
+        self._lbl_file.setFrame(False)
+        self._lbl_file.setStyleSheet(
+            "QLineEdit { background: transparent; border: none; }"
         )
 
         self._btn_analyze = QPushButton(tr(S.ANALYSE))
@@ -335,9 +371,18 @@ class MainWindow(QMainWindow):
         self._btn_analyze.setEnabled(False)
         self._btn_analyze.clicked.connect(lambda: self._start_analysis(force_restart=True))
 
+        # Elapsed time label (shown during and after analysis).
+        self._lbl_elapsed = QLabel()
+        self._lbl_elapsed.setStyleSheet(
+            "QLabel { color: #666; font-size: 12px; padding: 0 4px; }"
+        )
+        self._lbl_elapsed.setVisible(False)
+
         top_bar = QHBoxLayout()
         top_bar.addWidget(self._btn_analyze)
+        top_bar.addWidget(self._lbl_elapsed)
         top_bar.addWidget(self._lbl_file, stretch=1)
+        top_bar.addWidget(self._cmb_stt_model)
         top_bar.addWidget(self._btn_sensitivity)
         top_bar.addWidget(self._btn_recent)
         top_bar.addWidget(self._btn_open)
@@ -483,6 +528,7 @@ class MainWindow(QMainWindow):
         self._lbl_analysis_warning.setVisible(False)
         self._current_audio = file_path
         self._lbl_file.setText(str(Path(file_path)))
+        self._lbl_file.setCursorPosition(0)
         self._btn_analyze.setEnabled(True)
         self._audio_player.load(file_path)
         self._add_to_recent(file_path)
@@ -503,22 +549,57 @@ class MainWindow(QMainWindow):
         self._lbl_status.setVisible(False)
         log.info("Audio file loaded: %s", file_path)
 
-        # Try to load a cached analysis report.
-        cached = AnalysisReport.load_cache(file_path)
+        # Try to load a cached analysis report for the selected model.
+        stt_model_key = self._cmb_stt_model.currentData()
+        cached = AnalysisReport.load_cache(file_path, stt_model_key)
         if cached is not None:
             self._current_report = cached
             self._apply_sensitivity_filter()
-            self._transcript.load_segments(cached.segments, cached.detections)
             self._lbl_status.setText(tr(S.LOADED_CACHED))
             self._lbl_status.setVisible(True)
             log.info("Loaded cached analysis for %s", file_path)
+
+            # Check if gap-fill still needs to run for this file/model.
+            from monitor.pipeline import is_gap_fill_complete
+            if not is_gap_fill_complete(Path(file_path), stt_model_key):
+                log.info("Gap-fill incomplete for %s; starting analysis to resume.", file_path)
+                self._start_analysis()
         else:
-            # No cache -- clear old data and start analysis immediately.
+            # No completed report -- start analysis.
+            # Pre-load intermediate caches so the user sees data immediately
+            # instead of waiting ~20s for the subprocess to reload models.
             self._current_report = None
-            self._report_table.load_report(AnalysisReport(audio_path=file_path))
-            self._transcript.load_segments([])
-            log.info("No cache for %s; auto-starting analysis.", file_path)
+            from monitor.pipeline import (has_intermediate_stt_cache,
+                                          _load_intermediate_stt,
+                                          _load_intermediate_events)
+            stt_cache = _load_intermediate_stt(Path(file_path), stt_model_key)
+            events_cache = _load_intermediate_events(Path(file_path))
+            if stt_cache and stt_cache["segments"]:
+                for seg in stt_cache["segments"]:
+                    self._partial_seg_starts.add(round(seg.start, 2))
+                    self._partial_segments.append(seg)
+                log.info("Pre-loaded %d cached STT segments for immediate display.",
+                         len(stt_cache["segments"]))
+            if events_cache:
+                self._partial_detections.extend(events_cache)
+                log.info("Pre-loaded %d cached event detections for immediate display.",
+                         len(events_cache))
+            if self._partial_segments or self._partial_detections:
+                self._schedule_partial_refresh()
+            else:
+                self._report_table.load_report(AnalysisReport(audio_path=file_path))
+                self._transcript.load_segments([])
+            if has_intermediate_stt_cache(Path(file_path), stt_model_key):
+                log.info("No completed analysis for %s; resuming from intermediate cache.", file_path)
+            else:
+                log.info("No cache for %s; starting fresh analysis.", file_path)
             self._start_analysis()
+            # Override progress bar to reflect pre-loaded cached state
+            # instead of showing 0% while subprocess loads models.
+            if self._partial_segments:
+                self._progress_bar.setValue(30)
+                self._progress_bar.setFormat(
+                    "30%  |  \u05e0\u05d8\u05e2\u05df \u05de\u05de\u05d8\u05de\u05d5\u05df, \u05d8\u05d5\u05e2\u05df \u05de\u05d5\u05d3\u05dc\u05d9\u05dd...")
 
     # ------------------------------------------------------------------
     # File picker
@@ -601,19 +682,28 @@ class MainWindow(QMainWindow):
         # clear intermediate caches so the analysis starts fresh.
         if force_restart and self._current_audio:
             from ..pipeline import _remove_intermediate_caches
-            _remove_intermediate_caches(Path(self._current_audio))
-            log.info("Cleared intermediate caches for fresh analysis.")
+            stt_key = self._cmb_stt_model.currentData()
+            _remove_intermediate_caches(Path(self._current_audio), stt_key)
+            log.info("Cleared intermediate caches for fresh analysis (model=%s).", stt_key)
 
         self._btn_analyze.setEnabled(False)
         self._btn_open.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
 
+        # Start elapsed timer.
+        self._analysis_start_time = time.monotonic()
+        self._analysis_elapsed_secs = 0
+        self._lbl_elapsed.setText(self._format_elapsed(0))
+        self._lbl_elapsed.setVisible(True)
+        self._elapsed_timer.start()
+
         try:
             self._worker_queue = multiprocessing.Queue()
+            stt_model_key = self._cmb_stt_model.currentData()
             self._worker_process = multiprocessing.Process(
                 target=run_analysis,
-                args=(self._current_audio, self._worker_queue),
+                args=(self._current_audio, self._worker_queue, None, stt_model_key),
                 daemon=True,
             )
             self._worker_process.start()
@@ -633,7 +723,72 @@ class MainWindow(QMainWindow):
             self._on_error(f"Failed to start analysis: {exc}")
 
     # ------------------------------------------------------------------
-    # Subprocess queue polling
+    # STT model selector
+    # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _on_stt_model_changed(self, _index: int) -> None:
+        """Persist the selected STT model; reload cached or restart analysis."""
+        key = self._cmb_stt_model.currentData()
+        self._settings.setValue(SETTINGS_STT_MODEL_KEY, key)
+        log.info("STT model changed to: %s", key)
+
+        if not self._current_audio:
+            return
+
+        # Stop any running analysis and clear partial state.
+        self._stop_previous_analysis()
+        self._clear_partial_state()
+
+        # If a completed analysis cache exists for the new model, load it.
+        cached = AnalysisReport.load_cache(self._current_audio, key)
+        if cached is not None:
+            log.info("Loaded cached analysis for model %s.", key)
+            self._current_report = cached
+            self._apply_sensitivity_filter()
+            self._lbl_status.setText(tr(S.LOADED_CACHED))
+            self._lbl_status.setVisible(True)
+
+            # Check if gap-fill still needs to run for this model.
+            from monitor.pipeline import is_gap_fill_complete
+            if not is_gap_fill_complete(Path(self._current_audio), key):
+                log.info("Gap-fill incomplete for model %s; starting analysis to resume.", key)
+                self._start_analysis()
+            return
+
+        # No completed report — pre-load intermediate caches for immediate display.
+        from monitor.pipeline import (has_intermediate_stt_cache,
+                                      _load_intermediate_stt,
+                                      _load_intermediate_events)
+        self._current_report = None
+        stt_cache = _load_intermediate_stt(Path(self._current_audio), key)
+        events_cache = _load_intermediate_events(Path(self._current_audio))
+        if stt_cache and stt_cache["segments"]:
+            for seg in stt_cache["segments"]:
+                self._partial_seg_starts.add(round(seg.start, 2))
+                self._partial_segments.append(seg)
+            log.info("Pre-loaded %d cached STT segments for immediate display.",
+                     len(stt_cache["segments"]))
+        if events_cache:
+            self._partial_detections.extend(events_cache)
+            log.info("Pre-loaded %d cached event detections for immediate display.",
+                     len(events_cache))
+        if self._partial_segments or self._partial_detections:
+            self._schedule_partial_refresh()
+        else:
+            self._report_table.load_report(AnalysisReport(audio_path=self._current_audio))
+            self._transcript.load_segments([])
+        if has_intermediate_stt_cache(Path(self._current_audio), key):
+            log.info("No completed analysis for model %s; resuming from intermediate cache.", key)
+        else:
+            log.info("No cache for model %s; starting fresh analysis.", key)
+        self._start_analysis()
+        # Override progress bar to reflect pre-loaded cached state.
+        if self._partial_segments:
+            self._progress_bar.setValue(30)
+            self._progress_bar.setFormat(
+                "30%  |  \u05e0\u05d8\u05e2\u05df \u05de\u05de\u05d8\u05de\u05d5\u05df, \u05d8\u05d5\u05e2\u05df \u05de\u05d5\u05d3\u05dc\u05d9\u05dd...")
+
     # ------------------------------------------------------------------
 
     @Slot()
@@ -744,7 +899,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _update_sub_bar(bar: QProgressBar, done: int, total: int, label: str) -> None:
-        """Shared helper to render a byte-level download progress bar."""
+        """Shared helper to render a sub-operation progress bar.
+
+        Supports two modes:
+        - Byte-level download progress (large totals, shown as MB)
+        - Gap-fill progress (small totals in seconds, shown as time)
+        """
         if done == -1:
             bar.setVisible(False)
             return
@@ -765,15 +925,22 @@ class MainWindow(QMainWindow):
                     done, total, label,
                 )
                 done = total
-            # Determinate mode with MB display.
-            bar.setRange(0, total)
-            bar.setValue(done)
-            done_mb = done / (1024 * 1024)
-            total_mb = total / (1024 * 1024)
+            bar.setRange(0, 1000)
+            bar.setValue(int(done * 1000 / total))
             pct = done * 100 // total
-            bar.setFormat(
-                f"{label}  {done_mb:.0f} / {total_mb:.0f} MB ({pct}%)"
-            )
+            # Detect gap-fill progress (seconds) vs download progress (bytes).
+            # Gap-fill totals are typically < 100_000 seconds; downloads are
+            # in millions of bytes.
+            if total < 100_000:
+                # Gap-fill mode: label already contains the position info.
+                bar.setFormat(f"{label} ({pct}%)")
+            else:
+                # Download mode: show MB.
+                done_mb = done / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                bar.setFormat(
+                    f"{label}  {done_mb:.0f} / {total_mb:.0f} MB ({pct}%)"
+                )
 
     @Slot(int, int, str)
     def _on_task_progress(self, task_id: int, pct: int, label: str) -> None:
@@ -812,6 +979,9 @@ class MainWindow(QMainWindow):
         """Accumulate partial STT segments and schedule a debounced UI refresh."""
         for d in segment_dicts:
             try:
+                key = round(d["start"], 2)
+                if key in self._partial_seg_starts:
+                    continue
                 seg = TranscribedSegment(
                     text=d["text"],
                     start=d["start"],
@@ -824,6 +994,7 @@ class MainWindow(QMainWindow):
                         for w in d.get("words", [])
                     ],
                 )
+                self._partial_seg_starts.add(key)
                 self._partial_segments.append(seg)
             except (KeyError, TypeError):
                 log.debug("Skipping malformed partial STT segment: %r", d)
@@ -833,6 +1004,9 @@ class MainWindow(QMainWindow):
         """Accumulate partial event detections and schedule a debounced UI refresh."""
         for d in detection_dicts:
             try:
+                key = (round(d["start"], 2), round(d["end"], 2), d["type"])
+                if key in self._partial_event_keys:
+                    continue
                 det = Detection(
                     type=DetectionType(d["type"]),
                     start=d["start"],
@@ -840,6 +1014,7 @@ class MainWindow(QMainWindow):
                     confidence=d.get("confidence", 1.0),
                     details=d.get("details", {}),
                 )
+                self._partial_event_keys.add(key)
                 self._partial_detections.append(det)
             except (KeyError, TypeError, ValueError):
                 log.debug("Skipping malformed partial detection: %r", d)
@@ -898,6 +1073,8 @@ class MainWindow(QMainWindow):
         """Reset partial accumulation state."""
         self._partial_segments.clear()
         self._partial_detections.clear()
+        self._partial_seg_starts.clear()
+        self._partial_event_keys.clear()
         self._partial_dirty = False
         self._partial_refresh_timer.stop()
         self._lbl_partial_warning.setVisible(False)
@@ -929,6 +1106,13 @@ class MainWindow(QMainWindow):
         self._lbl_status.setVisible(False)
         self._btn_analyze.setEnabled(True)
         self._btn_open.setEnabled(True)
+        # Stop elapsed timer but keep the label visible with final time.
+        self._elapsed_timer.stop()
+        if self._analysis_start_time is not None:
+            elapsed = int(time.monotonic() - self._analysis_start_time)
+            self._analysis_elapsed_secs = elapsed
+            self._lbl_elapsed.setText(self._format_elapsed(elapsed))
+            # Keep label visible — user can see how long it took.
         # Clean up process/queue references now that analysis is done.
         self._worker_process = None
         self._worker_queue = None
@@ -936,7 +1120,6 @@ class MainWindow(QMainWindow):
         self._clear_partial_state()
         self._current_report = report
         self._apply_sensitivity_filter()
-        self._transcript.load_segments(report.segments, report.detections)
         log.info(
             "Analysis complete: %d detections found.", len(report.detections)
         )
@@ -960,6 +1143,12 @@ class MainWindow(QMainWindow):
         self._lbl_status.setText(f"{tr(S.ERROR)}: {error_msg}")
         self._btn_analyze.setEnabled(True)
         self._btn_open.setEnabled(True)
+        # Stop elapsed timer but keep the label visible.
+        self._elapsed_timer.stop()
+        if self._analysis_start_time is not None:
+            elapsed = int(time.monotonic() - self._analysis_start_time)
+            self._analysis_elapsed_secs = elapsed
+            self._lbl_elapsed.setText(self._format_elapsed(elapsed))
         # Clean up process/queue references now that analysis is done.
         self._worker_process = None
         self._worker_queue = None
@@ -967,6 +1156,28 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, tr(S.ERROR),
                              tr(S.ANALYSIS_FAILED).format(msg=error_msg))
         log.error("Analysis failed: %s", error_msg)
+
+    # ------------------------------------------------------------------
+    # Elapsed time helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_elapsed(seconds: int) -> str:
+        """Format elapsed seconds as a readable string."""
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"\u23F1 {h}:{m:02d}:{s:02d}"
+        return f"\u23F1 {m}:{s:02d}"
+
+    @Slot()
+    def _update_elapsed_label(self) -> None:
+        """Tick the elapsed time label once per second during analysis."""
+        if self._analysis_start_time is None:
+            return
+        elapsed = int(time.monotonic() - self._analysis_start_time)
+        self._analysis_elapsed_secs = elapsed
+        self._lbl_elapsed.setText(self._format_elapsed(elapsed))
 
     # ------------------------------------------------------------------
     # Sensitivity re-filtering

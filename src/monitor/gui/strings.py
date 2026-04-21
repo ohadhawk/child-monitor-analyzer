@@ -98,6 +98,7 @@ class S:
 
     # --- STT progress ---
     STT_TRANSCRIBING = "stt_transcribing"
+    STT_GAP_FILL = "stt_gap_fill"
     STT_STARTING = "stt_starting"
     STT_DOWNLOADING = "stt_downloading"
 
@@ -241,6 +242,8 @@ _STRINGS = {
     # --- STT progress ---
     (S.STT_TRANSCRIBING, Lang.HE):   "מתמלל...",
     (S.STT_TRANSCRIBING, Lang.EN):   "Transcribing...",
+    (S.STT_GAP_FILL, Lang.HE):       "משלים פערים...",
+    (S.STT_GAP_FILL, Lang.EN):       "Filling gaps...",
     (S.STT_STARTING, Lang.HE):       "מתחיל תמלול...",
     (S.STT_STARTING, Lang.EN):       "Starting transcription...",
     (S.STT_DOWNLOADING, Lang.HE):    "מוריד מודל תמלול (~1.5 GB)...",

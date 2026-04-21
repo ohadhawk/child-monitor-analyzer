@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .strings import tr, S
-from .player_icons import icon_play, icon_pause, icon_skip_back, icon_skip_forward, icon_volume
+from .player_icons import icon_play, icon_pause, icon_volume
 
 log = logging.getLogger(__name__)
 
@@ -58,21 +58,21 @@ EVENT_NEAR_TOLERANCE = 0.5
 
 
 def _format_time(milliseconds: int) -> str:
-    """Format milliseconds as MM:SS.
+    """Format milliseconds as HH:MM:SS.
 
     Args:
         milliseconds: Time value in milliseconds.
 
     Returns:
-        Formatted string, e.g. "02:35".
+        Formatted string, e.g. "01:02:35".
 
     Example:
-        _format_time(155000) -> "02:35"
+        _format_time(3755000) -> "01:02:35"
     """
-    # divmod(155, 60) -> (2, 35)
     total_seconds = max(0, milliseconds) // 1000
-    minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes:02d}:{seconds:02d}"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 # ===========================
@@ -152,16 +152,16 @@ class AudioPlayerWidget(QWidget):
 
     def _build_controls(self) -> None:
         """Create all UI control widgets."""
-        self._btn_back = QPushButton()
-        self._btn_back.setIcon(icon_skip_back())
+        self._btn_back = QPushButton("\u27F2")
         self._btn_play = QPushButton()
         self._btn_play.setIcon(icon_play())
-        self._btn_forward = QPushButton()
-        self._btn_forward.setIcon(icon_skip_forward())
+        self._btn_forward = QPushButton("\u27F3")
 
         for button in (self._btn_back, self._btn_play, self._btn_forward):
             button.setFixedHeight(32)
             button.setFixedWidth(40)
+        for button in (self._btn_back, self._btn_forward):
+            button.setStyleSheet("QPushButton { font-size: 18pt; padding-top: 0px; padding-bottom: 4px; }")
 
         # --- Event navigation buttons (prev / next detection) ---
         self._btn_prev_event = QPushButton(tr(S.PLAYER_PREV_EVENT))
