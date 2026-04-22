@@ -290,7 +290,7 @@ class AnalysisPipeline:
 
         # Export transcript as plain text.
         try:
-            _save_transcript_txt(audio_path, segments, all_detections)
+            _save_transcript_txt(audio_path, segments, all_detections, stt_model_key)
         except OSError as exc:
             log.warning("Could not save transcript.txt: %s", exc)
 
@@ -1246,6 +1246,7 @@ def _save_transcript_txt(
     audio_path: Path,
     segments: List[TranscribedSegment],
     detections: List[Detection],
+    stt_model_key: str = "thorough",
 ) -> None:
     """Export a combined transcript + event markers as plain text.
 
@@ -1268,6 +1269,13 @@ def _save_transcript_txt(
         ts = _format_hhmmss(start)
         lines.append(f"[{ts}] {text}")
 
-    out_path = _artifact_dir(audio_path) / "transcript.txt"
+    out_path = _artifact_dir(audio_path) / f"transcript_{stt_model_key}.txt"
+    # Remove legacy unkeyed transcript.txt if present.
+    legacy = _artifact_dir(audio_path) / "transcript.txt"
+    if legacy.exists():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     out_path.write_text("\n".join(lines), encoding="utf-8")
     log.info("Transcript exported to %s (%d lines).", out_path, len(lines))

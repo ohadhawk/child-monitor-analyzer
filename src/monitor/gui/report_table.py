@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from PySide6.QtCore import Qt, Signal, QPoint, QRect
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QSize
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -49,6 +49,7 @@ from ..models import (
     DetectionType,
     DETECTION_LABELS_HE,
 )
+from .player_icons import icon_play
 from .strings import tr, S
 
 log = logging.getLogger(__name__)
@@ -429,6 +430,8 @@ class ReportTableWidget(QWidget):
         self._popup_closed_column: int = -1
         self._popup_closed_time: float = 0.0
 
+        self._play_icon = icon_play()
+
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -447,6 +450,8 @@ class ReportTableWidget(QWidget):
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -802,14 +807,26 @@ class ReportTableWidget(QWidget):
         confidence_item.setBackground(background_color)
         self._table.setItem(row_index, 3, confidence_item)
 
-        # Column 4: Play button.
-        play_button = QPushButton("▶")
+        # Column 4: Play button (icon matches the media player play button).
+        play_button = QPushButton()
+        play_button.setIcon(self._play_icon)
+        play_button.setIconSize(QSize(18, 18))
         play_button.setFixedWidth(32)
         start_time = detection.start
         play_button.clicked.connect(
             lambda checked=False, time=start_time: self._on_play(time)
         )
         self._table.setCellWidget(row_index, 4, play_button)
+
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        """Any cell click triggers playback for that row."""
+        item = self._table.item(row, 0)
+        if item is None:
+            return
+        start_time = item.data(Qt.ItemDataRole.UserRole)
+        if start_time is None:
+            return
+        self._on_play(start_time)
 
     def _on_play(self, start_time: float) -> None:
         seek_position = max(0.0, start_time - PLAY_CONTEXT_SECONDS)

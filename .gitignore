@@ -37,10 +37,21 @@ build/
 # Per-file analysis output folders (contain analysis.json, etc.)
 20260*/
 
+# Hebrew-named analysis output folders
+יאן*/
+נאווה*/
+
 # Temporary pip output
 pip_out.txt
 pip_err.txt
 pip_output.txt
+
+# Build archives
+child_monitor_analyzer.zip
+monitor.zip
+
+# Probe / debug output
+gap_probe_out.txt
 
 # IDE / Editor
 .idea/

@@ -20,6 +20,10 @@ block_cipher = None
 # Project root (where this .spec file lives).
 PROJECT_ROOT = Path(SPECPATH)
 SITE_PACKAGES = Path(sys.executable).parent / ".." / "Lib" / "site-packages"
+# Fallback: resolve via importlib if the relative path doesn't exist.
+if not SITE_PACKAGES.exists():
+    import importlib
+    SITE_PACKAGES = Path(importlib.import_module("_soundfile_data").__path__[0]).parent
 
 a = Analysis(
     [str(PROJECT_ROOT / "src" / "run_gui.py")],
