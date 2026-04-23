@@ -741,6 +741,7 @@ class MainWindow(QMainWindow):
         # Stop any running analysis and clear partial state.
         self._stop_previous_analysis()
         self._clear_partial_state()
+        self._lbl_analysis_warning.setVisible(False)
 
         # If a completed analysis cache exists for the new model, load it.
         cached = AnalysisReport.load_cache(self._current_audio, key)
@@ -756,6 +757,16 @@ class MainWindow(QMainWindow):
             if not is_gap_fill_complete(Path(self._current_audio), key):
                 log.info("Gap-fill incomplete for model %s; starting analysis to resume.", key)
                 self._start_analysis()
+                return
+
+            # No more work to do — hide progress UI left over from prior run.
+            self._progress_bar.setVisible(False)
+            for bar in self._task_bars:
+                bar.setVisible(False)
+            self._elapsed_timer.stop()
+            self._lbl_elapsed.setVisible(False)
+            self._btn_analyze.setEnabled(True)
+            self._btn_open.setEnabled(True)
             return
 
         # No completed report — pre-load intermediate caches for immediate display.
