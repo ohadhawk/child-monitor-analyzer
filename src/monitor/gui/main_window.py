@@ -108,6 +108,7 @@ SETTINGS_STT_MODEL_KEY = "stt_model"
 # STT model identifiers (must match values stored in QSettings).
 STT_MODEL_THOROUGH = "thorough"  # ivrit-ai/whisper-large-v3-ct2
 STT_MODEL_FAST = "fast"          # ivrit-ai/whisper-large-v3-turbo-ct2
+STT_MODEL_NONE = "none"          # events-only, no transcription
 
 # ===========================
 # MAIN WINDOW
@@ -353,6 +354,7 @@ class MainWindow(QMainWindow):
         self._cmb_stt_model.setFixedHeight(36)
         self._cmb_stt_model.addItem("מודל תמלול: יסודי", STT_MODEL_THOROUGH)
         self._cmb_stt_model.addItem("מודל תמלול: מהיר", STT_MODEL_FAST)
+        self._cmb_stt_model.addItem("ללא תמלול", STT_MODEL_NONE)
         saved_model = self._settings.value(SETTINGS_STT_MODEL_KEY, STT_MODEL_THOROUGH)
         idx = self._cmb_stt_model.findData(saved_model)
         if idx >= 0:

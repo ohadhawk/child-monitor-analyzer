@@ -76,15 +76,18 @@ class AnalysisPipeline:
         _profanity: Profanity detector (word-list + AI).
     """
 
+    _UNSET = object()  # sentinel for default STT
+
     def __init__(
         self,
         *,
-        stt: Optional[HebrewSTT] = None,
+        stt: Optional[HebrewSTT] = _UNSET,  # type: ignore[assignment]
         audio_events: Optional[AudioEventDetector] = None,
         profanity: Optional[ProfanityDetector] = None,
         use_ai_profanity: bool = True,
     ) -> None:
-        self._stt = stt or HebrewSTT()
+        # stt=None → events-only (no transcription); omitted → default model
+        self._stt = HebrewSTT() if stt is self._UNSET else stt
         self._audio_events = audio_events or AudioEventDetector()
         self._profanity = profanity or ProfanityDetector(use_ai=use_ai_profanity)
 
@@ -206,37 +209,47 @@ class AnalysisPipeline:
 
         _progress(0, "מתחיל ניתוח...")
 
-        # --- Phase 0.5: Load all models in parallel (with dual progress) ---
-        _progress(2, tr(S.PIPE_LOADING_STT))
-        phase_start = time.perf_counter()
-        log.debug("phase=load_models start (parallel STT + SED + profanity)")
+        events_only = self._stt is None
 
-        # Start profanity AI model preload on a standalone daemon thread.
-        # This runs concurrently and doesn't block Phase 0.5 completion.
-        # Phase 2 will find the model already loaded (or wait via the lock
-        # if the download is still in progress).
-        _prof_thread = threading.Thread(
-            target=self._profanity.preload_ai_model,
-            args=(_sub3,),
-            name="profanity-preload",
-            daemon=True,
-        )
-        _prof_thread.start()
+        # --- Phase 0.5: Load models in parallel (with dual progress) ---
+        if events_only:
+            # Events-only: load only the audio event detector (SED).
+            _progress(5, "טוען מודל אירועים...")
+            phase_start = time.perf_counter()
+            log.debug("phase=load_models start (SED only — events-only mode)")
+            self._audio_events._load_sed(on_sub_progress=_sub2)
+            log.debug(
+                "phase=load_models done in %.2fs", time.perf_counter() - phase_start,
+            )
+            _sub2(-1, -1, "")  # hide slot-1 sub-bar
+            _progress(25, tr(S.PIPE_ALL_MODELS_LOADED))
+        else:
+            _progress(2, tr(S.PIPE_LOADING_STT))
+            phase_start = time.perf_counter()
+            log.debug("phase=load_models start (parallel STT + SED + profanity)")
 
-        with ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="model-load",
-        ) as pool:
-            f_stt = pool.submit(self._stt._load_model, on_sub_progress=_sub)
-            f_sed = pool.submit(self._audio_events._load_sed, on_sub_progress=_sub2)
-            # Surface any exceptions raised in the worker threads.
-            f_stt.result()
-            f_sed.result()
-        log.debug(
-            "phase=load_models done in %.2fs", time.perf_counter() - phase_start,
-        )
-        _sub(-1, -1, "")   # hide slot-0 sub-bar
-        _sub2(-1, -1, "")  # hide slot-1 sub-bar
-        _progress(25, tr(S.PIPE_ALL_MODELS_LOADED))
+            # Start profanity AI model preload on a standalone daemon thread.
+            _prof_thread = threading.Thread(
+                target=self._profanity.preload_ai_model,
+                args=(_sub3,),
+                name="profanity-preload",
+                daemon=True,
+            )
+            _prof_thread.start()
+
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="model-load",
+            ) as pool:
+                f_stt = pool.submit(self._stt._load_model, on_sub_progress=_sub)
+                f_sed = pool.submit(self._audio_events._load_sed, on_sub_progress=_sub2)
+                f_stt.result()
+                f_sed.result()
+            log.debug(
+                "phase=load_models done in %.2fs", time.perf_counter() - phase_start,
+            )
+            _sub(-1, -1, "")   # hide slot-0 sub-bar
+            _sub2(-1, -1, "")  # hide slot-1 sub-bar
+            _progress(25, tr(S.PIPE_ALL_MODELS_LOADED))
 
         # --- Phase 1: STT + audio events in parallel ---
         segments, audio_detections = self._run_parallel_phase(
@@ -255,12 +268,15 @@ class AnalysisPipeline:
         # removed when the user explicitly re-starts processing.
 
         # --- Phase 2: Profanity detection on transcription ---
-        _progress(70, tr(S.PIPE_PROFANITY_SEARCH))
-        profanity_detections = self._profanity.detect(segments)
-        _progress(85, f"{tr(S.PIPE_PROFANITY_SEARCH)} -- {len(profanity_detections)}")
+        if events_only:
+            profanity_detections: list = []
+        else:
+            _progress(70, tr(S.PIPE_PROFANITY_SEARCH))
+            profanity_detections = self._profanity.detect(segments)
+            _progress(85, f"{tr(S.PIPE_PROFANITY_SEARCH)} -- {len(profanity_detections)}")
 
         # Warn the GUI if AI profanity model was not available.
-        if not self._profanity.ai_available and on_warning:
+        if not events_only and not self._profanity.ai_available and on_warning:
             try:
                 on_warning(S.AI_PROFANITY_UNAVAILABLE)
             except Exception:
@@ -288,11 +304,12 @@ class AnalysisPipeline:
         except OSError as exc:
             log.warning("Could not save analysis cache: %s", exc)
 
-        # Export transcript as plain text.
-        try:
-            _save_transcript_txt(audio_path, segments, all_detections, stt_model_key)
-        except OSError as exc:
-            log.warning("Could not save transcript.txt: %s", exc)
+        # Export transcript as plain text (skip for events-only mode).
+        if not events_only:
+            try:
+                _save_transcript_txt(audio_path, segments, all_detections, stt_model_key)
+            except OSError as exc:
+                log.warning("Could not save transcript.txt: %s", exc)
 
         return report
 
@@ -685,7 +702,7 @@ class AnalysisPipeline:
             # can skip re-processing them during the VAD pass.
             _cached_for_transcribe = list(cached_stt) if (need_gap_fill_only and cached_stt) else incomplete_cached_segments
 
-            if cached_stt is None or need_gap_fill_only:
+            if self._stt is not None and (cached_stt is None or need_gap_fill_only):
                 futures[pool.submit(
                     self._stt.transcribe, audio_path,
                     on_progress=_stt_progress,
@@ -904,6 +921,9 @@ def is_gap_fill_complete(audio_path: Path, stt_model_key: str = "thorough") -> b
     Used by the GUI to decide whether to start analysis for gap-fill
     even when a full analysis cache already exists.
     """
+    # Events-only mode has no STT work — always complete.
+    if stt_model_key == "none":
+        return True
     cache_file = _stt_cache_path(audio_path, stt_model_key)
     if not cache_file.exists():
         # Also check for un-suffixed legacy cache (stt_cache.json) in the

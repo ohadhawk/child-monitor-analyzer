@@ -192,11 +192,16 @@ def run_analysis(
             _safe_put(queue, {"type": MSG_WARNING, "key": key})
 
         # --- Run the pipeline ---
-        from .stt import DEFAULT_MODEL, TURBO_MODEL
-        stt_model_name = TURBO_MODEL if stt_model_key == "fast" else DEFAULT_MODEL
-        log.info("Using STT model: %s (%s)", stt_model_name, stt_model_key)
-        from .stt import HebrewSTT
-        pipeline = AnalysisPipeline(stt=HebrewSTT(model_name=stt_model_name))
+        if stt_model_key == "none":
+            log.info("No-transcription mode: skipping STT model.")
+            stt_instance = None
+        else:
+            from .stt import DEFAULT_MODEL, TURBO_MODEL
+            stt_model_name = TURBO_MODEL if stt_model_key == "fast" else DEFAULT_MODEL
+            log.info("Using STT model: %s (%s)", stt_model_name, stt_model_key)
+            from .stt import HebrewSTT
+            stt_instance = HebrewSTT(model_name=stt_model_name)
+        pipeline = AnalysisPipeline(stt=stt_instance)
         report = pipeline.analyze(
             audio_path,
             on_progress=on_progress,
