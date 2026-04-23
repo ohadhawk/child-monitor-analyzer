@@ -221,7 +221,9 @@ class AnalysisPipeline:
             log.debug(
                 "phase=load_models done in %.2fs", time.perf_counter() - phase_start,
             )
-            _sub2(-1, -1, "")  # hide slot-1 sub-bar
+            _sub(-1, -1, "")   # hide slot-0 sub-bar (STT — unused)
+            _sub2(-1, -1, "")  # hide slot-1 sub-bar (SED — done)
+            _sub3(-1, -1, "")  # hide slot-2 sub-bar (profanity — unused)
             _progress(25, tr(S.PIPE_ALL_MODELS_LOADED))
         else:
             _progress(2, tr(S.PIPE_LOADING_STT))

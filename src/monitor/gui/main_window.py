@@ -1080,6 +1080,10 @@ class MainWindow(QMainWindow):
         self._partial_dirty = False
         self._partial_refresh_timer.stop()
         self._lbl_partial_warning.setVisible(False)
+        # Hide sub-progress bars so stale bars from a prior run don't linger.
+        self._sub_progress_bar.setVisible(False)
+        self._sub_progress_bar2.setVisible(False)
+        self._sub_progress_bar3.setVisible(False)
 
     def _on_analysis_warning(self, key: str) -> None:
         """Show a non-fatal analysis warning banner."""
