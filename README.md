@@ -2,6 +2,24 @@
 
 Analyse Hebrew audio files for profanity, shouting, crying, and other events — with precise timestamps.
 
+## Quick Start
+
+```powershell
+# 1. Create & activate a virtual environment (Windows PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 2. Install dependencies
+pip install -e .
+
+# 3. Launch the GUI
+.\.venv\Scripts\python.exe src\run_gui.py
+```
+
+Optional flags: `--normal-priority` (run the analysis worker at normal instead of idle CPU priority), `--debug` (verbose logging).
+
+---
+
 ## Table of Contents
 
 1. [Overview](#1-overview)
