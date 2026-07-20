@@ -15,7 +15,13 @@ first run into ``dist/monitor-gui/models/``.
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
+
+# Bundle python-docx: its data files (default.docx template), hidden
+# imports, and distribution metadata (read via importlib.metadata).
+_docx_datas, _docx_binaries, _docx_hiddenimports = collect_all("docx")
 
 # Project root (where this .spec file lives).
 PROJECT_ROOT = Path(SPECPATH)
@@ -28,13 +34,13 @@ if not SITE_PACKAGES.exists():
 a = Analysis(
     [str(PROJECT_ROOT / "src" / "run_gui.py")],
     pathex=[str(PROJECT_ROOT / "src")],
-    binaries=[],
+    binaries=[] + _docx_binaries,
     datas=[
         # Bundle the profanity word lists.
         (str(PROJECT_ROOT / "data"), "data"),
         # _soundfile_data contains libsndfile DLL (required by soundfile).
         (str(SITE_PACKAGES / "_soundfile_data"), "_soundfile_data"),
-    ],
+    ] + _docx_datas,
     hiddenimports=[
         # --- monitor subpackages ---
         "monitor",
@@ -45,6 +51,7 @@ a = Analysis(
         "monitor.profanity",
         "monitor.pipeline",
         "monitor.cli",
+        "monitor.priority",
         "monitor.gui",
         "monitor.gui.main_window",
         "monitor.gui.report_table",
@@ -97,7 +104,9 @@ a = Analysis(
         "yaml",
         "regex",
         "packaging",
-    ],
+        # --- docx export ---
+        "docx",
+    ] + _docx_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
         # --- Wire cross-widget signals ---
         self._report_table.play_requested.connect(self._audio_player.seek_to)
         self._report_table.play_requested.connect(self._transcript.highlight_time)
-        self._report_table.filter_changed.connect(self._transcript.set_visible_types)
+        self._report_table.detections_changed.connect(self._transcript.set_detections)
         self._report_table.events_changed.connect(self._audio_player.set_event_times)
         self._transcript.play_requested.connect(self._audio_player.seek_to)
         self._audio_player.position_changed.connect(self._report_table.highlight_time)
@@ -590,7 +590,7 @@ class MainWindow(QMainWindow):
                 self._schedule_partial_refresh()
             else:
                 self._report_table.load_report(AnalysisReport(audio_path=file_path))
-                self._transcript.load_segments([])
+                self._transcript.load_segments([], [])
             if has_intermediate_stt_cache(Path(file_path), stt_model_key):
                 log.info("No completed analysis for %s; resuming from intermediate cache.", file_path)
             else:
@@ -790,7 +790,7 @@ class MainWindow(QMainWindow):
             self._schedule_partial_refresh()
         else:
             self._report_table.load_report(AnalysisReport(audio_path=self._current_audio))
-            self._transcript.load_segments([])
+            self._transcript.load_segments([], [])
         if has_intermediate_stt_cache(Path(self._current_audio), key):
             log.info("No completed analysis for model %s; resuming from intermediate cache.", key)
         else:
@@ -1063,10 +1063,10 @@ class MainWindow(QMainWindow):
             segments=list(self._partial_segments),
             detections=filtered_dets,
         )
+        # Set transcript segments first; the report table then drives the
+        # visible detections via detections_changed -> set_detections.
+        self._transcript.load_segments(self._partial_segments)
         self._report_table.load_report(partial_report)
-        self._transcript.load_segments(
-            self._partial_segments, filtered_dets,
-        )
         log.debug(
             "Partial UI refresh: %d segments, %d detections (%d filtered)",
             len(self._partial_segments), len(self._partial_detections),
@@ -1222,10 +1222,11 @@ class MainWindow(QMainWindow):
             segments=self._current_report.segments,
             detections=filtered,
         )
+        # Set transcript segments first; the report table then drives the
+        # visible detections (type + details + sensitivity) via
+        # detections_changed -> transcript.set_detections.
+        self._transcript.load_segments(self._current_report.segments)
         self._report_table.load_report(filtered_report)
-        self._transcript.load_segments(
-            self._current_report.segments, filtered,
-        )
 
 
 # ===========================
@@ -1253,6 +1254,12 @@ def _parse_gui_args() -> argparse.Namespace:
         type=Path,
         default=LOG_DIR,
         help=f"Directory for log files (default: {LOG_DIR}).",
+    )
+    parser.add_argument(
+        "--normal-priority",
+        action="store_true",
+        help="Run analysis workers at normal OS priority "
+             "(default: workers run at lowest/idle priority).",
     )
     return parser.parse_args()
 
@@ -1361,6 +1368,12 @@ def run_gui() -> None:
     multiprocessing.freeze_support()
 
     args = _parse_gui_args()
+
+    # Record the worker-priority preference so spawned analysis
+    # subprocesses inherit it via the environment.  The GUI process
+    # itself stays at normal priority.
+    from monitor.priority import set_low_priority_env
+    set_low_priority_env(not args.normal_priority)
 
     # In debug mode, allocate a console window (useful for PyInstaller --windowed).
     if args.debug:

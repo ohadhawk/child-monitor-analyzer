@@ -408,6 +408,7 @@ class ReportTableWidget(QWidget):
     play_requested = Signal(float)
     filter_changed = Signal(object)  # emits Set[str] of visible type labels
     events_changed = Signal(object)  # emits List[float] of visible event start times
+    detections_changed = Signal(object)  # emits List[Detection] of visible detections
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -780,6 +781,7 @@ class ReportTableWidget(QWidget):
             len(filtered), len(self._detections),
         )
         self.events_changed.emit([d.start for d in filtered])
+        self.detections_changed.emit(list(filtered))
 
     def _populate_row(self, row_index: int, detection: Detection) -> None:
         background_color = ROW_COLORS.get(detection.type, QColor(255, 255, 255))

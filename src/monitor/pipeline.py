@@ -27,7 +27,7 @@ from typing import Callable, List, Optional
 
 from .audio_events import AudioEventDetector
 from .model_cache import setup_model_environment
-from .models import AnalysisReport, Detection, DetectionType, TranscribedSegment
+from .models import AnalysisReport, Detection, DetectionType, TranscribedSegment, sanitize_artifact_stem
 from .profanity import ProfanityDetector
 from .stt import HebrewSTT
 from .gui.strings import tr, S
@@ -901,7 +901,7 @@ def _deduplicate(detections: List[Detection]) -> List[Detection]:
 
 def _artifact_dir(audio_path: Path) -> Path:
     """Return the artifact directory for an audio file, creating it if needed."""
-    d = audio_path.parent / audio_path.stem
+    d = audio_path.parent / sanitize_artifact_stem(audio_path.stem)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -913,7 +913,11 @@ def _stt_cache_path(audio_path: Path, stt_model_key: str = "thorough") -> Path:
 
 def has_intermediate_stt_cache(audio_path: Path, stt_model_key: str = "thorough") -> bool:
     """Return True if an intermediate STT cache file exists for this audio/model."""
-    cache = audio_path.parent / audio_path.stem / f"stt_cache_{stt_model_key}.json"
+    cache = (
+        audio_path.parent
+        / sanitize_artifact_stem(audio_path.stem)
+        / f"stt_cache_{stt_model_key}.json"
+    )
     return cache.exists()
 
 
@@ -926,6 +930,20 @@ def is_gap_fill_complete(audio_path: Path, stt_model_key: str = "thorough") -> b
     # Events-only mode has no STT work — always complete.
     if stt_model_key == "none":
         return True
+    # A fresh per-model final report is authoritative: report.save_cache()
+    # runs only at 100% (after gap-fill fully finishes), so its presence
+    # means the whole pipeline completed.  This prevents an unwanted full
+    # re-analysis when the intermediate stt_cache is missing or failed to
+    # save (e.g. the Windows trailing-space path bug, where the stt_cache
+    # write fails but the final report still lands).  Accepted trade-off:
+    # a genuinely old pre-gap-fill cache that was migrated to the per-model
+    # name won't be re-upgraded — preferred over re-analysing complete work.
+    per_model = AnalysisReport.get_cache_path(audio_path, stt_model_key)
+    try:
+        if per_model.exists() and audio_path.stat().st_mtime <= per_model.stat().st_mtime:
+            return True
+    except OSError:
+        pass
     cache_file = _stt_cache_path(audio_path, stt_model_key)
     if not cache_file.exists():
         # Also check for un-suffixed legacy cache (stt_cache.json) in the
@@ -936,7 +954,6 @@ def is_gap_fill_complete(audio_path: Path, stt_model_key: str = "thorough") -> b
         # No STT cache at all.  If an analysis cache exists, it was produced
         # by old code that didn't write a separate STT cache — gap-fill was
         # never tracked, so we must re-run.
-        from .models import AnalysisReport
         if AnalysisReport.load_cache(audio_path, stt_model_key) is not None:
             return False
         return True  # genuinely no prior work — nothing to gap-fill

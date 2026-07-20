@@ -21,8 +21,24 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger(__name__)
 
 # ===========================
-# ENUMS
+# PATH HELPERS
 # ===========================
+
+
+def sanitize_artifact_stem(stem: str) -> str:
+    """Return a filesystem-safe artifact-folder name for an audio stem.
+
+    Windows silently strips trailing spaces and dots from path
+    components, which makes a folder derived verbatim from a stem like
+    ``"recording 1 "`` (trailing space) unreachable — writes fail with
+    ``[Errno 2] No such file or directory`` under extended-length paths.
+    Stripping the trailing spaces/dots ourselves keeps the writer and
+    reader in agreement.
+    """
+    cleaned = stem.rstrip(" .")
+    return cleaned or stem  # fallback if the stem was all spaces/dots
+
+
 
 
 class DetectionType(enum.Enum):
@@ -311,7 +327,8 @@ class AnalysisReport:
         Returns:
             Path like ``/dir/recording/`` (stem of audio filename).
         """
-        d = Path(audio_path).parent / Path(audio_path).stem
+        p = Path(audio_path)
+        d = p.parent / sanitize_artifact_stem(p.stem)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -336,7 +353,8 @@ class AnalysisReport:
         Returns:
             Path like ``/dir/recording/analysis_thorough.json``.
         """
-        d = Path(audio_path).parent / Path(audio_path).stem
+        p = Path(audio_path)
+        d = p.parent / sanitize_artifact_stem(p.stem)
         return d / f"analysis_{stt_model_key}.json"
 
     def save_cache(self) -> Path:
@@ -386,7 +404,11 @@ class AnalysisReport:
         # Fall back to legacy path and migrate if needed (only for default model).
         if not cache_path.exists() and stt_model_key == "thorough":
             # Also check model-agnostic name from before per-model caching.
-            old_generic = audio_path.parent / audio_path.stem / "analysis.json"
+            old_generic = (
+                audio_path.parent
+                / sanitize_artifact_stem(audio_path.stem)
+                / "analysis.json"
+            )
             if old_generic.exists():
                 try:
                     old_generic.rename(cache_path)

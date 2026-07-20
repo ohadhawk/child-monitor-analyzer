@@ -73,6 +73,19 @@ class S:
     TRANSCRIPT_EMPTY = "transcript_empty"
     TRANSCRIPT_SEARCH = "transcript_search"
     TRANSCRIPT_NO_MATCHES = "transcript_no_matches"
+    TRANSCRIPT_DOWNLOAD = "transcript_download"
+    TRANSCRIPT_DOWNLOAD_TITLE = "transcript_download_title"
+    TRANSCRIPT_DOWNLOAD_EMPTY = "transcript_download_empty"
+    EXPORT_DIALOG_TITLE = "export_dialog_title"
+    EXPORT_FORMAT_LABEL = "export_format_label"
+    EXPORT_FORMAT_TXT = "export_format_txt"
+    EXPORT_FORMAT_DOCX = "export_format_docx"
+    EXPORT_INCLUDE_TIMESTAMPS = "export_include_timestamps"
+    EXPORT_INCLUDE_EVENTS = "export_include_events"
+    EXPORT_OK = "export_ok"
+    EXPORT_CANCEL = "export_cancel"
+    EXPORT_SAVED = "export_saved"
+    EXPORT_FAILED = "export_failed"
 
     # --- Detection type labels ---
     DT_PROFANITY = "dt_profanity"
@@ -198,6 +211,32 @@ _STRINGS = {
     (S.TRANSCRIPT_SEARCH, Lang.EN):  "Search transcript...",
     (S.TRANSCRIPT_NO_MATCHES, Lang.HE): "0/0",
     (S.TRANSCRIPT_NO_MATCHES, Lang.EN): "0/0",
+    (S.TRANSCRIPT_DOWNLOAD, Lang.HE): "הורדת התמליל",
+    (S.TRANSCRIPT_DOWNLOAD, Lang.EN): "Download transcript",
+    (S.TRANSCRIPT_DOWNLOAD_TITLE, Lang.HE): "שמירת תמליל",
+    (S.TRANSCRIPT_DOWNLOAD_TITLE, Lang.EN): "Save transcript",
+    (S.TRANSCRIPT_DOWNLOAD_EMPTY, Lang.HE): "אין תמליל לשמירה.",
+    (S.TRANSCRIPT_DOWNLOAD_EMPTY, Lang.EN): "No transcript to save.",
+    (S.EXPORT_DIALOG_TITLE, Lang.HE): "הורדת תמליל",
+    (S.EXPORT_DIALOG_TITLE, Lang.EN): "Download transcript",
+    (S.EXPORT_FORMAT_LABEL, Lang.HE): "פורמט:",
+    (S.EXPORT_FORMAT_LABEL, Lang.EN): "Format:",
+    (S.EXPORT_FORMAT_TXT, Lang.HE): "טקסט (‎.txt)",
+    (S.EXPORT_FORMAT_TXT, Lang.EN): "Text (.txt)",
+    (S.EXPORT_FORMAT_DOCX, Lang.HE): "מסמך Word ‏(‎.docx)",
+    (S.EXPORT_FORMAT_DOCX, Lang.EN): "Word document (.docx)",
+    (S.EXPORT_INCLUDE_TIMESTAMPS, Lang.HE): "כלול חותמות זמן",
+    (S.EXPORT_INCLUDE_TIMESTAMPS, Lang.EN): "Include timestamps",
+    (S.EXPORT_INCLUDE_EVENTS, Lang.HE): "כלול אירועי שמע",
+    (S.EXPORT_INCLUDE_EVENTS, Lang.EN): "Include audio events",
+    (S.EXPORT_OK, Lang.HE): "שמירה",
+    (S.EXPORT_OK, Lang.EN): "Save",
+    (S.EXPORT_CANCEL, Lang.HE): "ביטול",
+    (S.EXPORT_CANCEL, Lang.EN): "Cancel",
+    (S.EXPORT_SAVED, Lang.HE): "התמליל נשמר בהצלחה.",
+    (S.EXPORT_SAVED, Lang.EN): "Transcript saved successfully.",
+    (S.EXPORT_FAILED, Lang.HE): "שמירת התמליל נכשלה:",
+    (S.EXPORT_FAILED, Lang.EN): "Failed to save transcript:",
 
     # --- Detection type labels ---
     (S.DT_PROFANITY, Lang.HE):       "ניבול פה",

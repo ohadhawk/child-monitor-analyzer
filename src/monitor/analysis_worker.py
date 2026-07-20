@@ -143,6 +143,13 @@ def run_analysis(
         _setup_child_logging(log_dir)
         log.info("Analysis subprocess started (PID %d) for: %s", os.getpid(), audio_path)
 
+        # Run this CPU-heavy worker at the lowest OS priority (unless the
+        # user opted out via --normal-priority).  Guard on parent_process()
+        # so an in-process call (e.g. tests) never nices the caller.
+        from .priority import low_priority_enabled, set_low_priority
+        if low_priority_enabled() and multiprocessing.parent_process() is not None:
+            set_low_priority()
+
         from .model_cache import setup_model_environment
         setup_model_environment()
 

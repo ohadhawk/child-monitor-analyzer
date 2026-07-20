@@ -17,14 +17,21 @@ Usage:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSettings, Signal
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -72,6 +79,87 @@ def _format_time(seconds: float) -> str:
     h, remainder = divmod(total, 3600)
     m, s = divmod(remainder, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+# QSettings location (shared app-wide store) and export-preference keys.
+_SETTINGS_ORG = "ChildMonitorAnalyzer"
+_SETTINGS_APP = "monitor-gui"
+_EXPORT_FORMAT_KEY = "export_format"
+_EXPORT_TIMESTAMPS_KEY = "export_include_timestamps"
+_EXPORT_EVENTS_KEY = "export_include_events"
+
+
+class TranscriptExportDialog(QDialog):
+    """Ask the user for transcript export format and content options.
+
+    Remembers the last choices via QSettings.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr(S.EXPORT_DIALOG_TITLE))
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+
+        layout = QVBoxLayout(self)
+
+        # --- Format selection ---
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel(tr(S.EXPORT_FORMAT_LABEL)))
+        self._cmb_format = QComboBox()
+        self._cmb_format.addItem(tr(S.EXPORT_FORMAT_TXT), "txt")
+        self._cmb_format.addItem(tr(S.EXPORT_FORMAT_DOCX), "docx")
+        fmt_row.addWidget(self._cmb_format, stretch=1)
+        layout.addLayout(fmt_row)
+
+        # --- Content options ---
+        self._chk_timestamps = QCheckBox(tr(S.EXPORT_INCLUDE_TIMESTAMPS))
+        self._chk_events = QCheckBox(tr(S.EXPORT_INCLUDE_EVENTS))
+        layout.addWidget(self._chk_timestamps)
+        layout.addWidget(self._chk_events)
+
+        # --- Buttons ---
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(tr(S.EXPORT_OK))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr(S.EXPORT_CANCEL))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._load_prefs()
+
+    def _load_prefs(self) -> None:
+        """Populate the widgets from the last saved choices."""
+        fmt = self._settings.value(_EXPORT_FORMAT_KEY, "txt", type=str)
+        if fmt not in ("txt", "docx"):
+            fmt = "txt"
+        idx = self._cmb_format.findData(fmt)
+        self._cmb_format.setCurrentIndex(max(0, idx))
+        self._chk_timestamps.setChecked(
+            self._settings.value(_EXPORT_TIMESTAMPS_KEY, True, type=bool)
+        )
+        self._chk_events.setChecked(
+            self._settings.value(_EXPORT_EVENTS_KEY, False, type=bool)
+        )
+
+    def accept(self) -> None:
+        """Persist the current choices before closing."""
+        self._settings.setValue(_EXPORT_FORMAT_KEY, self.selected_format())
+        self._settings.setValue(_EXPORT_TIMESTAMPS_KEY, self.include_timestamps())
+        self._settings.setValue(_EXPORT_EVENTS_KEY, self.include_events())
+        super().accept()
+
+    def selected_format(self) -> str:
+        return self._cmb_format.currentData() or "txt"
+
+    def include_timestamps(self) -> bool:
+        return self._chk_timestamps.isChecked()
+
+    def include_events(self) -> bool:
+        return self._chk_events.isChecked()
 
 
 class TranscriptWidget(QWidget):
@@ -133,6 +221,12 @@ class TranscriptWidget(QWidget):
         self._lbl_match_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         search_row.addWidget(self._lbl_match_count)
 
+        self._btn_download = QPushButton("↓")
+        self._btn_download.setFixedWidth(28)
+        self._btn_download.setToolTip(tr(S.TRANSCRIPT_DOWNLOAD))
+        self._btn_download.clicked.connect(self._download_transcript)
+        search_row.addWidget(self._btn_download)
+
         layout.addLayout(search_row)
 
         self._text_edit = QTextEdit()
@@ -152,7 +246,8 @@ class TranscriptWidget(QWidget):
         detections: Optional[List[Detection]] = None,
     ) -> None:
         self._segments = segments
-        self._detections = sorted(detections or [], key=lambda d: d.start)
+        if detections is not None:
+            self._detections = sorted(detections, key=lambda d: d.start)
         self._block_to_segment.clear()
         self._block_to_detection.clear()
         self._highlighted_block = -1
@@ -225,6 +320,111 @@ class TranscriptWidget(QWidget):
         """Update which detection types show markers and reload."""
         self._visible_types = visible_types
         self.load_segments(self._segments, self._detections)
+
+    def set_detections(self, detections: List[Detection]) -> None:
+        """Replace the visible detections and rebuild, keeping segments.
+
+        Driven by the report table's filter state so that the transcript
+        shows exactly the same events as the report (type + details +
+        sensitivity filters all applied).
+        """
+        self.load_segments(self._segments, detections)
+
+    def _build_transcript_lines(
+        self, include_timestamps: bool, include_events: bool
+    ) -> list[str]:
+        """Build transcript lines from current segments (+ optional events)."""
+        items: list[tuple[float, str]] = []  # (start, text)
+        for seg in self._segments:
+            items.append((seg.start, seg.text.strip()))
+        if include_events:
+            for det in self._detections:
+                emoji = _DETECTION_EMOJI.get(det.type, "⚠️")
+                label = DETECTION_LABELS_HE.get(det.type, det.type.value)
+                items.append((det.start, f"[{emoji} {label}]"))
+        items.sort(key=lambda x: x[0])
+        if include_timestamps:
+            return [f"[{_format_time(start)}] {text}" for start, text in items]
+        return [text for _start, text in items]
+
+    def _download_transcript(self) -> None:
+        """Prompt for options + a path and save the currently-shown transcript."""
+        if not self._segments and not self._detections:
+            QMessageBox.information(
+                self, tr(S.EXPORT_DIALOG_TITLE),
+                tr(S.TRANSCRIPT_DOWNLOAD_EMPTY),
+            )
+            return
+
+        dialog = TranscriptExportDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fmt = dialog.selected_format()
+        include_ts = dialog.include_timestamps()
+        include_ev = dialog.include_events()
+
+        suffix = ".docx" if fmt == "docx" else ".txt"
+        file_filter = (
+            "Word Document (*.docx)" if fmt == "docx" else "Text files (*.txt)"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr(S.EXPORT_DIALOG_TITLE), f"transcript{suffix}", file_filter,
+        )
+        if not path:
+            return
+        # The chosen format is authoritative — force the correct suffix even
+        # if the user typed a different/no extension.
+        path = str(Path(path).with_suffix(suffix))
+
+        lines = self._build_transcript_lines(include_ts, include_ev)
+        try:
+            if fmt == "docx":
+                self._write_docx(path, lines)
+            else:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(lines))
+            log.info("Transcript saved to %s", path)
+            QMessageBox.information(
+                self, tr(S.EXPORT_DIALOG_TITLE), tr(S.EXPORT_SAVED),
+            )
+        except Exception as exc:  # OSError, ImportError (docx), etc.
+            log.exception("Failed to save transcript to %s", path)
+            QMessageBox.warning(
+                self, tr(S.EXPORT_DIALOG_TITLE),
+                f"{tr(S.EXPORT_FAILED)} {exc}",
+            )
+
+    @staticmethod
+    def _write_docx(path: str, lines: list[str]) -> None:
+        """Write *lines* to a .docx with right-to-left, right-aligned text."""
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        doc = Document()
+        # Make the default 'Normal' style right-to-left so every paragraph
+        # (including empty ones) renders as RTL.
+        normal_ppr = doc.styles["Normal"].element.get_or_add_pPr()
+        if normal_ppr.find(qn("w:bidi")) is None:
+            normal_ppr.append(OxmlElement("w:bidi"))
+
+        for line in lines:
+            para = doc.add_paragraph()
+            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            # Paragraph-level RTL (belt-and-suspenders alongside the style).
+            p_pr = para._p.get_or_add_pPr()
+            if p_pr.find(qn("w:bidi")) is None:
+                p_pr.append(OxmlElement("w:bidi"))
+            run = para.add_run(line)
+            # Run-level RTL so mixed neutrals (brackets, timestamps) order
+            # correctly within the Hebrew text.
+            r_pr = run._r.get_or_add_rPr()
+            rtl = OxmlElement("w:rtl")
+            r_pr.append(rtl)
+
+        doc.save(path)
+
 
     def highlight_time(self, current_seconds: float) -> None:
         if not self._segments and not self._block_to_detection:
