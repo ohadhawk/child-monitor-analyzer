@@ -23,6 +23,11 @@ block_cipher = None
 # imports, and distribution metadata (read via importlib.metadata).
 _docx_datas, _docx_binaries, _docx_hiddenimports = collect_all("docx")
 
+# Bundle matplotlib: panns_inference imports ``matplotlib.pyplot`` at module
+# load time, so its data files (mpl-data/fonts) and submodules must ship even
+# though the plotting code path is never exercised at runtime.
+_mpl_datas, _mpl_binaries, _mpl_hiddenimports = collect_all("matplotlib")
+
 # Project root (where this .spec file lives).
 PROJECT_ROOT = Path(SPECPATH)
 SITE_PACKAGES = Path(sys.executable).parent / ".." / "Lib" / "site-packages"
@@ -34,13 +39,13 @@ if not SITE_PACKAGES.exists():
 a = Analysis(
     [str(PROJECT_ROOT / "src" / "run_gui.py")],
     pathex=[str(PROJECT_ROOT / "src")],
-    binaries=[] + _docx_binaries,
+    binaries=[] + _docx_binaries + _mpl_binaries,
     datas=[
         # Bundle the profanity word lists.
         (str(PROJECT_ROOT / "data"), "data"),
         # _soundfile_data contains libsndfile DLL (required by soundfile).
         (str(SITE_PACKAGES / "_soundfile_data"), "_soundfile_data"),
-    ] + _docx_datas,
+    ] + _docx_datas + _mpl_datas,
     hiddenimports=[
         # --- monitor subpackages ---
         "monitor",
@@ -106,13 +111,12 @@ a = Analysis(
         "packaging",
         # --- docx export ---
         "docx",
-    ] + _docx_hiddenimports,
+    ] + _docx_hiddenimports + _mpl_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         "tkinter",
-        "matplotlib",
         "IPython",
         "jupyter",
         "notebook",
