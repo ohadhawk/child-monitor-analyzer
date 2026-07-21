@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import (
-    QSettings, Qt, QTimer, QUrl, Slot,
+    QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot,
     QtMsgType, qInstallMessageHandler,
 )
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -60,6 +60,7 @@ from ..analysis_worker import (
     MSG_WARNING, MSG_FINISHED, MSG_ERROR,
 )
 from ..model_cache import setup_model_environment
+from ..model_updates import fetch_new_hebrew_models
 from ..models import (
     AnalysisReport, Detection, DetectionType,
     TranscribedSegment, TranscribedWord,
@@ -109,6 +110,31 @@ SETTINGS_STT_MODEL_KEY = "stt_model"
 STT_MODEL_THOROUGH = "thorough"  # ivrit-ai/whisper-large-v3-ct2
 STT_MODEL_FAST = "fast"          # ivrit-ai/whisper-large-v3-turbo-ct2
 STT_MODEL_NONE = "none"          # events-only, no transcription
+
+# ===========================
+# BACKGROUND WORKERS
+# ===========================
+
+
+class _ModelCheckWorker(QObject):
+    """Runs the HuggingFace new-model query off the GUI thread.
+
+    Emits ``finished(list)`` with the result on success, or ``failed(str)``
+    with an error message on failure. Never raises.
+    """
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            models = fetch_new_hebrew_models()
+            self.finished.emit(models)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            log.warning("New-model check failed: %s", exc)
+            self.failed.emit(str(exc))
+
 
 # ===========================
 # MAIN WINDOW
@@ -361,6 +387,15 @@ class MainWindow(QMainWindow):
             self._cmb_stt_model.setCurrentIndex(idx)
         self._cmb_stt_model.currentIndexChanged.connect(self._on_stt_model_changed)
 
+        # Compact button to check HuggingFace for new Hebrew models.
+        self._btn_check_models = QToolButton()
+        self._btn_check_models.setFixedHeight(36)
+        self._btn_check_models.setText(tr(S.CHECK_MODELS))
+        self._btn_check_models.setToolTip(tr(S.CHECK_MODELS_TOOLTIP))
+        self._btn_check_models.clicked.connect(self._check_new_models)
+        self._model_check_thread: Optional[QThread] = None
+        self._model_check_worker: Optional["_ModelCheckWorker"] = None
+
         self._lbl_file = QLineEdit(tr(S.NO_FILE_SELECTED))
         self._lbl_file.setReadOnly(True)
         self._lbl_file.setFrame(False)
@@ -385,6 +420,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self._lbl_elapsed)
         top_bar.addWidget(self._lbl_file, stretch=1)
         top_bar.addWidget(self._cmb_stt_model)
+        top_bar.addWidget(self._btn_check_models)
         top_bar.addWidget(self._btn_sensitivity)
         top_bar.addWidget(self._btn_recent)
         top_bar.addWidget(self._btn_open)
@@ -434,6 +470,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Clean up the analysis subprocess before closing."""
         self._stop_previous_analysis()
+        # Wait for any in-flight new-model check so the QThread is not
+        # destroyed while still running.
+        if self._model_check_thread is not None:
+            self._model_check_thread.quit()
+            self._model_check_thread.wait(3000)
         event.accept()
 
     # ------------------------------------------------------------------
@@ -531,6 +572,7 @@ class MainWindow(QMainWindow):
         self._current_audio = file_path
         self._lbl_file.setText(str(Path(file_path)))
         self._lbl_file.setCursorPosition(0)
+        self._transcript.set_export_source(file_path, self._cmb_stt_model.currentData())
         self._btn_analyze.setEnabled(True)
         self._audio_player.load(file_path)
         self._add_to_recent(file_path)
@@ -629,6 +671,70 @@ class MainWindow(QMainWindow):
         self._sensitivity_dialog.show()
         self._sensitivity_dialog.raise_()
         self._sensitivity_dialog.activateWindow()
+
+    # ------------------------------------------------------------------
+    # New-model check
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _check_new_models(self) -> None:
+        """Query HuggingFace (in a background thread) for new Hebrew models."""
+        if self._model_check_thread is not None:
+            return  # A check is already running.
+
+        self._btn_check_models.setEnabled(False)
+        self._lbl_status.setText(tr(S.CHECK_MODELS_CHECKING))
+        self._lbl_status.setVisible(True)
+
+        thread = QThread(self)
+        worker = _ModelCheckWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_check_finished)
+        worker.failed.connect(self._on_model_check_failed)
+        # Tear down the thread once the worker signals completion.
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_model_check_thread_done)
+        # Keep strong references so neither object is garbage-collected
+        # before the worker's run() executes on the background thread.
+        self._model_check_thread = thread
+        self._model_check_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _on_model_check_finished(self, models: list) -> None:
+        """Show the result of a successful new-model check."""
+        self._lbl_status.setVisible(False)
+        if models:
+            listing = "\n".join(f"\u2022 {m['created']}  {m['id']}" for m in models)
+            QMessageBox.information(
+                self, tr(S.CHECK_MODELS_TITLE),
+                tr(S.CHECK_MODELS_FOUND).format(list=listing),
+            )
+        else:
+            QMessageBox.information(
+                self, tr(S.CHECK_MODELS_TITLE), tr(S.CHECK_MODELS_NONE),
+            )
+
+    @Slot(str)
+    def _on_model_check_failed(self, msg: str) -> None:
+        """Show an error if the new-model check could not complete."""
+        self._lbl_status.setVisible(False)
+        QMessageBox.warning(
+            self, tr(S.CHECK_MODELS_TITLE),
+            tr(S.CHECK_MODELS_FAILED).format(msg=msg),
+        )
+
+    @Slot()
+    def _on_model_check_thread_done(self) -> None:
+        """Re-enable the check button once the background thread has finished."""
+        self._model_check_thread = None
+        self._model_check_worker = None
+        self._btn_check_models.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Analysis
@@ -734,6 +840,7 @@ class MainWindow(QMainWindow):
         key = self._cmb_stt_model.currentData()
         self._settings.setValue(SETTINGS_STT_MODEL_KEY, key)
         log.info("STT model changed to: %s", key)
+        self._transcript.set_export_source(self._current_audio, key)
 
         if not self._current_audio:
             return

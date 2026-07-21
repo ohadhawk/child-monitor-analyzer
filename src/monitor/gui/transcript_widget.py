@@ -176,6 +176,10 @@ class TranscriptWidget(QWidget):
         self._highlighted_block: int = -1
         self._visible_types: Optional[set] = None  # None = show all
 
+        # Source context used to build the default export filename.
+        self._audio_stem: Optional[str] = None
+        self._model_key: Optional[str] = None
+
         # Search state — stores QTextCursor objects with native Qt positions.
         self._search_cursors: List[QTextCursor] = []
         self._current_match: int = -1
@@ -347,6 +351,25 @@ class TranscriptWidget(QWidget):
             return [f"[{_format_time(start)}] {text}" for start, text in items]
         return [text for _start, text in items]
 
+    def set_export_source(
+        self, audio_path: Optional[str], model_key: Optional[str],
+    ) -> None:
+        """Record the audio file and STT model used for the default export name."""
+        self._audio_stem = Path(audio_path).stem.strip() if audio_path else None
+        self._model_key = model_key
+
+    def _default_export_name(self) -> str:
+        """Build the default export base name: '<audio-file> <תמלול …>'."""
+        model_label = {
+            "thorough": tr(S.EXPORT_NAME_THOROUGH),
+            "fast": tr(S.EXPORT_NAME_FAST),
+        }.get(self._model_key or "")
+        if self._audio_stem and model_label:
+            return f"{self._audio_stem} {model_label}"
+        if self._audio_stem:
+            return self._audio_stem
+        return "transcript"
+
     def _download_transcript(self) -> None:
         """Prompt for options + a path and save the currently-shown transcript."""
         if not self._segments and not self._detections:
@@ -367,8 +390,9 @@ class TranscriptWidget(QWidget):
         file_filter = (
             "Word Document (*.docx)" if fmt == "docx" else "Text files (*.txt)"
         )
+        default_name = self._default_export_name() + suffix
         path, _ = QFileDialog.getSaveFileName(
-            self, tr(S.EXPORT_DIALOG_TITLE), f"transcript{suffix}", file_filter,
+            self, tr(S.EXPORT_DIALOG_TITLE), default_name, file_filter,
         )
         if not path:
             return

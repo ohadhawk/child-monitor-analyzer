@@ -1,6 +1,6 @@
 """Process scheduling-priority helpers.
 
-Used to run the CPU-heavy analysis worker subprocess at the lowest OS
+Used to run the CPU-heavy analysis worker subprocess at a below-normal OS
 scheduling priority so the machine stays responsive during long
 transcriptions.  The main GUI process is left at normal priority.
 """
@@ -19,7 +19,7 @@ _ENV_FLAG = "MONITOR_LOW_PRIORITY"
 
 
 def set_low_priority() -> None:
-    """Best-effort: set the CURRENT process to the lowest OS priority.
+    """Best-effort: set the CURRENT process to below-normal OS priority.
 
     Never raises — priority tuning is a nice-to-have, not a requirement.
     Lowering priority never needs elevation on any supported platform.
@@ -29,16 +29,16 @@ def set_low_priority() -> None:
             import ctypes
             from ctypes import wintypes
 
-            IDLE_PRIORITY_CLASS = 0x00000040
+            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
             k32 = ctypes.WinDLL("kernel32", use_last_error=True)
             k32.GetCurrentProcess.restype = wintypes.HANDLE
             k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
             k32.SetPriorityClass.restype = wintypes.BOOL
-            if not k32.SetPriorityClass(k32.GetCurrentProcess(), IDLE_PRIORITY_CLASS):
-                log.warning("SetPriorityClass(IDLE) failed (err=%d).",
+            if not k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS):
+                log.warning("SetPriorityClass(BELOW_NORMAL) failed (err=%d).",
                             ctypes.get_last_error())
         else:
-            os.nice(19)  # POSIX: highest niceness = lowest priority
+            os.nice(10)  # POSIX: moderate niceness ≈ below-normal priority
     except Exception:
         log.warning("Could not lower process priority.", exc_info=True)
 

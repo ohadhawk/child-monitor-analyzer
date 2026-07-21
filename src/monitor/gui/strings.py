@@ -86,6 +86,8 @@ class S:
     EXPORT_CANCEL = "export_cancel"
     EXPORT_SAVED = "export_saved"
     EXPORT_FAILED = "export_failed"
+    EXPORT_NAME_THOROUGH = "export_name_thorough"
+    EXPORT_NAME_FAST = "export_name_fast"
 
     # --- Detection type labels ---
     DT_PROFANITY = "dt_profanity"
@@ -132,6 +134,15 @@ class S:
     SENSITIVITY_TITLE = "sensitivity_title"
     SENSITIVITY_LOW = "sensitivity_low"
     SENSITIVITY_HIGH = "sensitivity_high"
+
+    # --- New-model check ---
+    CHECK_MODELS = "check_models"
+    CHECK_MODELS_TOOLTIP = "check_models_tooltip"
+    CHECK_MODELS_TITLE = "check_models_title"
+    CHECK_MODELS_CHECKING = "check_models_checking"
+    CHECK_MODELS_NONE = "check_models_none"
+    CHECK_MODELS_FOUND = "check_models_found"
+    CHECK_MODELS_FAILED = "check_models_failed"
 
 
 # fmt: off
@@ -237,6 +248,10 @@ _STRINGS = {
     (S.EXPORT_SAVED, Lang.EN): "Transcript saved successfully.",
     (S.EXPORT_FAILED, Lang.HE): "שמירת התמליל נכשלה:",
     (S.EXPORT_FAILED, Lang.EN): "Failed to save transcript:",
+    (S.EXPORT_NAME_THOROUGH, Lang.HE): "תמלול יסודי",
+    (S.EXPORT_NAME_THOROUGH, Lang.EN): "תמלול יסודי",
+    (S.EXPORT_NAME_FAST, Lang.HE): "תמלול מהיר",
+    (S.EXPORT_NAME_FAST, Lang.EN): "תמלול מהיר",
 
     # --- Detection type labels ---
     (S.DT_PROFANITY, Lang.HE):       "ניבול פה",
@@ -313,6 +328,22 @@ _STRINGS = {
     (S.SENSITIVITY_LOW, Lang.EN):    "Low",
     (S.SENSITIVITY_HIGH, Lang.HE):   "רגיש מאוד",
     (S.SENSITIVITY_HIGH, Lang.EN):   "Very sensitive",
+
+    # --- New-model check ---
+    (S.CHECK_MODELS, Lang.HE):           "\u27F3 מודלים",
+    (S.CHECK_MODELS, Lang.EN):           "\u27F3 Models",
+    (S.CHECK_MODELS_TOOLTIP, Lang.HE):   "בדוק אם קיימים מודלי תמלול עבריים חדשים",
+    (S.CHECK_MODELS_TOOLTIP, Lang.EN):   "Check for new Hebrew transcription models",
+    (S.CHECK_MODELS_TITLE, Lang.HE):     "בדיקת מודלים חדשים",
+    (S.CHECK_MODELS_TITLE, Lang.EN):     "Check for new models",
+    (S.CHECK_MODELS_CHECKING, Lang.HE):  "בודק מודלים חדשים...",
+    (S.CHECK_MODELS_CHECKING, Lang.EN):  "Checking for new models...",
+    (S.CHECK_MODELS_NONE, Lang.HE):      "לא נמצאו מודלי תמלול עבריים חדשים.",
+    (S.CHECK_MODELS_NONE, Lang.EN):      "No new Hebrew transcription models found.",
+    (S.CHECK_MODELS_FOUND, Lang.HE):     "נמצאו מודלים עבריים חדשים:\n\n{list}",
+    (S.CHECK_MODELS_FOUND, Lang.EN):     "New Hebrew models found:\n\n{list}",
+    (S.CHECK_MODELS_FAILED, Lang.HE):    "בדיקת המודלים נכשלה:\n{msg}",
+    (S.CHECK_MODELS_FAILED, Lang.EN):    "Model check failed:\n{msg}",
 }
 # fmt: on
 
