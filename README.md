@@ -18,6 +18,28 @@ pip install -e .
 
 Optional flags: `--normal-priority` (run the analysis worker at normal instead of idle CPU priority), `--debug` (verbose logging).
 
+### Install / update on another PC (no large installer)
+
+Instead of shipping a multi-GB bundle, use the lightweight bootstrap script
+[`install.ps1`](install.ps1). It clones (or updates) the source, creates the
+virtual environment, installs dependencies, and can launch the GUI. Only
+[Git](https://git-scm.com/download/win) and Python 3.10+ are required.
+
+```powershell
+# First-time install (downloads just install.ps1, then bootstraps the rest):
+powershell -ExecutionPolicy Bypass -File install.ps1 -Launch
+
+# Update an existing install to the latest version (this is the "patch"):
+powershell -ExecutionPolicy Bypass -File install.ps1 -Launch
+```
+
+Updates run `git pull` + `pip install -e .`, so new code and any changed
+dependencies are applied. Useful options:
+
+- `-InstallDir <path>` — install location (default `%USERPROFILE%\child-monitor-analyzer`).
+- `-Proxy http://host:port` — route git and pip through a proxy.
+- `-SkipInstall` — pull source only, skip the dependency step.
+
 ---
 
 ## Table of Contents
