@@ -15,7 +15,7 @@ first run into ``dist/monitor-gui/models/``.
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
 
@@ -27,6 +27,11 @@ _docx_datas, _docx_binaries, _docx_hiddenimports = collect_all("docx")
 # load time, so its data files (mpl-data/fonts) and submodules must ship even
 # though the plotting code path is never exercised at runtime.
 _mpl_datas, _mpl_binaries, _mpl_hiddenimports = collect_all("matplotlib")
+
+# Bundle faster-whisper data assets: the Silero VAD model
+# (assets/silero_vad_v6.onnx) is loaded from disk at transcription time and is
+# not picked up by module analysis.
+_fw_datas = collect_data_files("faster_whisper")
 
 # Project root (where this .spec file lives).
 PROJECT_ROOT = Path(SPECPATH)
@@ -45,7 +50,7 @@ a = Analysis(
         (str(PROJECT_ROOT / "data"), "data"),
         # _soundfile_data contains libsndfile DLL (required by soundfile).
         (str(SITE_PACKAGES / "_soundfile_data"), "_soundfile_data"),
-    ] + _docx_datas + _mpl_datas,
+    ] + _docx_datas + _mpl_datas + _fw_datas,
     hiddenimports=[
         # --- monitor subpackages ---
         "monitor",
