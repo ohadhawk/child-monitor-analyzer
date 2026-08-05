@@ -55,6 +55,20 @@ else:
 # Example: "שמוק!" -> "שמוק"
 _HEBREW_ONLY_RE = re.compile(r"[^\u0590-\u05FF]")
 
+# AI toxicity classifier, pinned to an immutable commit.
+#
+# WHY THE PIN: without ``revision=``, transformers downloads whatever is on
+# the repository's moving ``main`` branch. A compromised or simply updated
+# upstream repo would change how this program classifies a child's speech,
+# with no version bump and no review on our side. See the same reasoning in
+# ``monitor.stt._STT_REVISIONS``.
+#
+# Captured 2026-08-03 from
+# https://huggingface.co/api/models/textdetox/bert-multilingual-toxicity-classifier
+# (revision dated 2025-12-08).
+_TOXICITY_MODEL = "textdetox/bert-multilingual-toxicity-classifier"
+_TOXICITY_REVISION = "8fe5526e9c6b69cf1a615104a2ad037fb266c670"
+
 # ===========================
 # HELPER FUNCTIONS
 # ===========================
@@ -205,7 +219,8 @@ class ProfanityDetector:
             try:
                 self._ai_pipeline = hf_pipeline(
                     "text-classification",
-                    model="textdetox/bert-multilingual-toxicity-classifier",
+                    model=_TOXICITY_MODEL,
+                    revision=_TOXICITY_REVISION,
                     truncation=True,
                     max_length=512,
                     local_files_only=True,
@@ -275,7 +290,8 @@ class ProfanityDetector:
                 try:
                     result.append(hf_pipeline(
                         "text-classification",
-                        model="textdetox/bert-multilingual-toxicity-classifier",
+                        model=_TOXICITY_MODEL,
+                        revision=_TOXICITY_REVISION,
                         truncation=True,
                         max_length=512,
                         model_kwargs=model_kwargs if model_kwargs else None,

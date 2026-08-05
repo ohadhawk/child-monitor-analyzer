@@ -120,3 +120,70 @@ def icon_volume() -> QIcon:
     path2.arcTo(QRectF(20, 7, 12, 18), -45, 90)
     p.drawPath(path2)
     return _finish(pm, p)
+
+
+# ── Cloud upload: neutral cloud with an up arrow ───────────────
+#
+# Deliberately NOT a Google "G" or the Drive triangle: Google's branding
+# guidelines forbid altering or recolouring their marks, and a greyed-out
+# logo is exactly such an alteration. A neutral glyph carries the same
+# meaning with no trademark exposure. The word "Google" appears only as
+# plain text elsewhere in the UI (nominative use).
+_INACTIVE_COLOR = QColor(150, 150, 150)
+_ACTIVE_COLOR = QColor(26, 115, 232)
+
+
+def icon_cloud_upload(active: bool = False) -> QIcon:
+    """Return the Drive account indicator glyph.
+
+    Args:
+        active: True when an account is linked (full colour); False draws the
+            muted, signed-out state.
+    """
+    colour = _ACTIVE_COLOR if active else _INACTIVE_COLOR
+    pm = QPixmap(_SIZE, _SIZE)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Cloud outline: three overlapping circles on a flat base.
+    cloud = QPainterPath()
+    cloud.addEllipse(QRectF(6.0, 12.0, 11.0, 11.0))
+    cloud.addEllipse(QRectF(12.0, 8.0, 13.0, 13.0))
+    cloud.addEllipse(QRectF(18.0, 13.0, 9.0, 9.0))
+    cloud.addRect(QRectF(9.0, 17.0, 15.0, 6.0))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawPath(cloud.simplified())
+
+    # Up arrow punched through the cloud in the background colour.
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    p.setBrush(Qt.GlobalColor.transparent)
+    arrow = QPolygonF([
+        QPointF(16.0, 10.0),
+        QPointF(21.0, 16.0),
+        QPointF(18.0, 16.0),
+        QPointF(18.0, 22.0),
+        QPointF(14.0, 22.0),
+        QPointF(14.0, 16.0),
+        QPointF(11.0, 16.0),
+    ])
+    p.drawPolygon(arrow)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+    return _finish(pm, p)
+
+
+def icon_upload_arrow() -> QIcon:
+    """Return a plain upward arrow for the transcript toolbar."""
+    pm, p = _new_pixmap()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawPolygon(QPolygonF([
+        QPointF(16.0, 6.0),
+        QPointF(25.0, 16.0),
+        QPointF(20.0, 16.0),
+        QPointF(20.0, 26.0),
+        QPointF(12.0, 26.0),
+        QPointF(12.0, 16.0),
+        QPointF(7.0, 16.0),
+    ]))
+    return _finish(pm, p)

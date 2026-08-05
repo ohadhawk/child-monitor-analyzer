@@ -23,10 +23,13 @@ block_cipher = None
 # imports, and distribution metadata (read via importlib.metadata).
 _docx_datas, _docx_binaries, _docx_hiddenimports = collect_all("docx")
 
-# Bundle matplotlib: panns_inference imports ``matplotlib.pyplot`` at module
-# load time, so its data files (mpl-data/fonts) and submodules must ship even
-# though the plotting code path is never exercised at runtime.
-_mpl_datas, _mpl_binaries, _mpl_hiddenimports = collect_all("matplotlib")
+# NOTE: matplotlib is deliberately NOT bundled any more.
+# It was only ever present because upstream ``panns_inference.models`` had a
+# module-level ``import matplotlib.pyplot`` that was never exercised at
+# runtime. That transitively pulled in Pillow, which as of 2026-08-03 carries
+# 27 open advisories -- shipped attack surface for zero functionality.
+# The PANNs inference code is now vendored in ``monitor.vendor.panns`` without
+# that import, so both packages are excluded below.
 
 # Bundle faster-whisper data assets: the Silero VAD model
 # (assets/silero_vad_v6.onnx) is loaded from disk at transcription time and is
@@ -44,24 +47,34 @@ if not SITE_PACKAGES.exists():
 a = Analysis(
     [str(PROJECT_ROOT / "src" / "run_gui.py")],
     pathex=[str(PROJECT_ROOT / "src")],
-    binaries=[] + _docx_binaries + _mpl_binaries,
+    binaries=[] + _docx_binaries,
     datas=[
         # Bundle the profanity word lists.
         (str(PROJECT_ROOT / "data"), "data"),
         # _soundfile_data contains libsndfile DLL (required by soundfile).
         (str(SITE_PACKAGES / "_soundfile_data"), "_soundfile_data"),
-    ] + _docx_datas + _mpl_datas + _fw_datas,
+        # Attribution for the vendored PANNs/torchlibrosa code (MIT requires
+        # the licence text to ship with redistributed binaries).
+        (
+            str(PROJECT_ROOT / "src" / "monitor" / "vendor" / "panns"
+                / "LICENSE-third-party.txt"),
+            "monitor/vendor/panns",
+        ),
+    ] + _docx_datas + _fw_datas,
     hiddenimports=[
         # --- monitor subpackages ---
         "monitor",
         "monitor.models",
         "monitor.model_cache",
+        "monitor.cancellation",
         "monitor.stt",
         "monitor.audio_events",
         "monitor.profanity",
         "monitor.pipeline",
         "monitor.cli",
         "monitor.priority",
+        "monitor.analysis_worker",
+        "monitor.model_updates",
         "monitor.gui",
         "monitor.gui.main_window",
         "monitor.gui.report_table",
@@ -70,6 +83,30 @@ a = Analysis(
         "monitor.gui.transcript_widget",
         "monitor.gui.player_icons",
         "monitor.gui.strings",
+        "monitor.gui.google_account",
+        "monitor.log_redaction",
+        # --- Google Drive upload ---
+        "monitor.gdrive",
+        "monitor.gdrive.auth",
+        "monitor.gdrive.client",
+        "monitor.gdrive.naming",
+        "monitor.gdrive.store",
+        # keyring discovers backends through entry points, which PyInstaller
+        # cannot see.  Without these the frozen build silently resolves to the
+        # null backend and the feature disables itself.
+        "keyring",
+        "keyring.backends",
+        "keyring.backends.Windows",
+        "keyring.backends.fail",
+        "win32ctypes",
+        "win32ctypes.pywin32",
+        # --- vendored PANNs inference (replaces panns-inference/torchlibrosa) ---
+        "monitor.vendor",
+        "monitor.vendor.panns",
+        "monitor.vendor.panns.inference",
+        "monitor.vendor.panns.labels",
+        "monitor.vendor.panns._models",
+        "monitor.vendor.panns._stft",
         # --- PySide6 ---
         "PySide6",
         "PySide6.QtCore",
@@ -79,10 +116,7 @@ a = Analysis(
         # --- ML / audio ---
         "faster_whisper",
         "ctranslate2",
-        "panns_inference",
-        "panns_inference.models",
         "librosa",
-        "torchlibrosa",
         "soundfile",
         "audioread",
         "scipy",
@@ -116,7 +150,7 @@ a = Analysis(
         "packaging",
         # --- docx export ---
         "docx",
-    ] + _docx_hiddenimports + _mpl_hiddenimports,
+    ] + _docx_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -128,6 +162,14 @@ a = Analysis(
         "pytest",
         "pip",
         "setuptools",
+        # Removed with the panns_inference dependency -- see the note at the
+        # top of this file. Excluding them explicitly means an accidental
+        # re-introduction fails the build instead of silently adding ~40 MB
+        # and 27 Pillow advisories back into the bundle.
+        "matplotlib",
+        "PIL",
+        "panns_inference",
+        "torchlibrosa",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

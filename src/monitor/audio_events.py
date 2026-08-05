@@ -5,6 +5,10 @@ Uses the PANNs (Pre-trained Audio Neural Networks) SoundEventDetection model
 trained on Google AudioSet (527 classes) and librosa RMS energy analysis to
 identify non-speech events and abnormal volume levels in audio files.
 
+The PANNs inference code is vendored in ``monitor.vendor.panns`` rather than
+installed from PyPI -- see that package's ``LICENSE-third-party.txt`` for the
+rationale and the list of security fixes applied.
+
 Usage:
     from monitor.audio_events import AudioEventDetector
 
@@ -22,7 +26,8 @@ from typing import Callable, List, Optional
 
 import numpy as np
 
-from .model_cache import ensure_panns_ready, get_panns_dir
+from .cancellation import raise_if_cancelled
+from .model_cache import ensure_panns_labels, ensure_panns_ready, get_panns_dir
 from .models import AUDIOSET_CLASS_MAP, Detection, DetectionType
 from .gui.strings import tr, S
 
@@ -126,8 +131,8 @@ class AudioEventDetector:
             return
 
         t0 = time.perf_counter()
-        # Ensure PANNs files exist in the portable models directory and
-        # patch panns_inference.config before importing the class.
+        # Ensure PANNs files exist in the portable models directory. The
+        # checkpoint's SHA-256 is verified there before we ever load it.
         checkpoint_path = ensure_panns_ready(on_progress=on_sub_progress)
         log.info(
             "Loading PANNs SoundEventDetection model from %s ...",
@@ -140,25 +145,22 @@ class AudioEventDetector:
             checkpoint_bytes = checkpoint_path.stat().st_size if checkpoint_path.exists() else 1
             on_sub_progress(checkpoint_bytes, checkpoint_bytes, tr(S.AE_LOADING_MODEL))
 
-        from panns_inference import SoundEventDetection
+        from .vendor.panns import SoundEventDetection
 
-        # panns_inference only supports "cuda" or "cpu" natively.
-        # For XPU we load on CPU then move the model to XPU manually.
+        # The vendored wrapper handles XPU/CUDA/CPU directly and falls back to
+        # CPU when the requested accelerator is unavailable.
         best_device = _get_best_device()
-        self._device = best_device
 
         self._sed_model = SoundEventDetection(
-            checkpoint_path=str(checkpoint_path), device="cpu",
+            checkpoint_path=checkpoint_path, device=best_device,
         )
-
-        if best_device == "xpu":
-            import torch
-            self._sed_model.model = self._sed_model.model.to(torch.device("xpu"))
-            self._sed_model.device = "xpu"
-            log.info("PANNs model moved to XPU.")
+        self._device = self._sed_model.device
 
         elapsed = time.perf_counter() - t0
-        log.info("PANNs SoundEventDetection model loaded on %s in %.2fs.", best_device, elapsed)
+        log.info(
+            "PANNs SoundEventDetection model loaded on %s in %.2fs.",
+            self._device, elapsed,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -245,7 +247,11 @@ class AudioEventDetector:
         """
         self._load_sed()
         import librosa
-        from panns_inference import labels as panns_labels
+        from .vendor.panns import load_labels_cached
+
+        # AudioSet display names, ordered by class index. Loaded from the
+        # portable models directory -- no network access, no writes to $HOME.
+        panns_labels = load_labels_cached(str(ensure_panns_labels()))
 
         CHUNK_SECONDS = 300  # 5 minutes per chunk
         PANNS_SR = 32000
@@ -275,6 +281,7 @@ class AudioEventDetector:
         MIN_CHUNK_SAMPLES = PANNS_SR  # 1 second
 
         for chunk_idx in range(num_chunks):
+            raise_if_cancelled()
             start_sample = chunk_idx * chunk_samples
             end_sample = min(start_sample + chunk_samples, total_samples)
             chunk = audio[start_sample:end_sample]

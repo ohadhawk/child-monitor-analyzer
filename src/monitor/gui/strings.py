@@ -89,6 +89,42 @@ class S:
     EXPORT_NAME_THOROUGH = "export_name_thorough"
     EXPORT_NAME_FAST = "export_name_fast"
 
+    # --- Google Drive ---
+    GOOGLE_ACCOUNT_TITLE = "google_account_title"
+    GOOGLE_SIGN_IN = "google_sign_in"
+    GOOGLE_SIGN_OUT = "google_sign_out"
+    GOOGLE_CONNECTED_AS = "google_connected_as"
+    GOOGLE_NOT_CONNECTED = "google_not_connected"
+    GOOGLE_SCOPE_EXPLANATION = "google_scope_explanation"
+    GOOGLE_BROWSER_HINT = "google_browser_hint"
+    GOOGLE_AUTH_FAILED = "google_auth_failed"
+    GOOGLE_AUTH_TIMEOUT = "google_auth_timeout"
+    GOOGLE_SESSION_EXPIRED = "google_session_expired"
+    GOOGLE_KEYRING_UNAVAILABLE = "google_keyring_unavailable"
+    GOOGLE_NOT_CONFIGURED = "google_not_configured"
+    GOOGLE_SIGNING_IN = "google_signing_in"
+    GOOGLE_AUTH_DENIED = "google_auth_denied"
+    GOOGLE_MISSING_SCOPE = "google_missing_scope"
+    GOOGLE_MENU_ACCOUNT = "google_menu_account"
+    GOOGLE_MENU_UPLOAD_CURRENT = "google_menu_upload_current"
+    GOOGLE_MENU_OPEN_FOLDER = "google_menu_open_folder"
+    GOOGLE_MENU_ASK_EVERY_TIME = "google_menu_ask_every_time"
+    TRANSCRIPT_UPLOAD_DRIVE = "transcript_upload_drive"
+    UPLOAD_DIALOG_TITLE = "upload_dialog_title"
+    UPLOAD_OK = "upload_ok"
+    UPLOAD_TARGET_LABEL = "upload_target_label"
+    UPLOAD_NAME_LABEL = "upload_name_label"
+    UPLOAD_IN_PROGRESS = "upload_in_progress"
+    UPLOAD_SUCCESS = "upload_success"
+    UPLOAD_FAILED = "upload_failed"
+    UPLOAD_RETRY = "upload_retry"
+    UPLOAD_OPEN_IN_DOCS = "upload_open_in_docs"
+    UPLOAD_EXISTING_TITLE = "upload_existing_title"
+    UPLOAD_EXISTING_QUESTION = "upload_existing_question"
+    UPLOAD_REPLACE_EXISTING = "upload_replace_existing"
+    UPLOAD_CREATE_NEW = "upload_create_new"
+    UPLOAD_NO_NETWORK = "upload_no_network"
+
     # --- Detection type labels ---
     DT_PROFANITY = "dt_profanity"
     DT_SHOUT = "dt_shout"
@@ -252,6 +288,96 @@ _STRINGS = {
     (S.EXPORT_NAME_THOROUGH, Lang.EN): "תמלול יסודי",
     (S.EXPORT_NAME_FAST, Lang.HE): "תמלול מהיר",
     (S.EXPORT_NAME_FAST, Lang.EN): "תמלול מהיר",
+
+    # --- Google Drive ---
+    (S.GOOGLE_ACCOUNT_TITLE, Lang.HE): "חשבון Google",
+    (S.GOOGLE_ACCOUNT_TITLE, Lang.EN): "Google account",
+    (S.GOOGLE_SIGN_IN, Lang.HE): "התחבר עם Google",
+    (S.GOOGLE_SIGN_IN, Lang.EN): "Sign in with Google",
+    (S.GOOGLE_SIGN_OUT, Lang.HE): "נתק חשבון",
+    (S.GOOGLE_SIGN_OUT, Lang.EN): "Disconnect account",
+    (S.GOOGLE_CONNECTED_AS, Lang.HE): "מחובר כ־",
+    (S.GOOGLE_CONNECTED_AS, Lang.EN): "Signed in as ",
+    (S.GOOGLE_NOT_CONNECTED, Lang.HE): "לא מחובר ל‑Google Drive",
+    (S.GOOGLE_NOT_CONNECTED, Lang.EN): "Not connected to Google Drive",
+    (S.GOOGLE_SCOPE_EXPLANATION, Lang.HE):
+        "האפליקציה תוכל ליצור ולערוך רק קבצים שהיא עצמה יצרה. "
+        "אין לה גישה לשאר הקבצים בדרייב שלך.",
+    (S.GOOGLE_SCOPE_EXPLANATION, Lang.EN):
+        "The app can create and edit only the files it creates itself. "
+        "It has no access to the rest of your Drive.",
+    (S.GOOGLE_BROWSER_HINT, Lang.HE):
+        "ייפתח דפדפן לאישור ההתחברות. הסיסמה שלך אף פעם לא עוברת דרך האפליקציה.",
+    (S.GOOGLE_BROWSER_HINT, Lang.EN):
+        "A browser window will open for consent. Your password never passes "
+        "through this app.",
+    (S.GOOGLE_AUTH_FAILED, Lang.HE): "ההתחברות ל‑Google נכשלה:",
+    (S.GOOGLE_AUTH_FAILED, Lang.EN): "Google sign-in failed:",
+    (S.GOOGLE_AUTH_TIMEOUT, Lang.HE): "ההתחברות ל‑Google לא הושלמה בזמן.",
+    (S.GOOGLE_AUTH_TIMEOUT, Lang.EN): "Google sign-in was not completed in time.",
+    (S.GOOGLE_SESSION_EXPIRED, Lang.HE):
+        "ההרשאה ל‑Google פגה. יש להתחבר מחדש.",
+    (S.GOOGLE_SESSION_EXPIRED, Lang.EN):
+        "The Google authorization expired. Please sign in again.",
+    (S.GOOGLE_KEYRING_UNAVAILABLE, Lang.HE):
+        "לא ניתן לשמור את פרטי ההתחברות במאגר האישורים של Windows, "
+        "ולכן ההעלאה ל‑Google Drive מושבתת.",
+    (S.GOOGLE_KEYRING_UNAVAILABLE, Lang.EN):
+        "Credentials cannot be stored in Windows Credential Manager, so "
+        "Google Drive upload is disabled.",
+    (S.GOOGLE_NOT_CONFIGURED, Lang.HE):
+        "ההעלאה ל‑Google Drive אינה מוגדרת בגרסה הזו.",
+    (S.GOOGLE_NOT_CONFIGURED, Lang.EN):
+        "Google Drive upload is not configured in this build.",
+    (S.GOOGLE_SIGNING_IN, Lang.HE): "מתחבר ל‑Google…",
+    (S.GOOGLE_SIGNING_IN, Lang.EN): "Signing in to Google…",
+    (S.GOOGLE_AUTH_DENIED, Lang.HE): "לא ניתן אישור גישה ל‑Google Drive.",
+    (S.GOOGLE_AUTH_DENIED, Lang.EN): "Access to Google Drive was declined.",
+    (S.GOOGLE_MISSING_SCOPE, Lang.HE):
+        "החיבור הצליח אך לא ניתנה גישה ל‑Drive. יש להוסיף את הרשאת ה‑Drive במסך ההסכמה ולהתחבר שוב.",
+    (S.GOOGLE_MISSING_SCOPE, Lang.EN):
+        "Signed in, but Drive access was not granted. Add the Drive scope on the "
+        "OAuth consent screen, then sign in again.",
+    (S.GOOGLE_MENU_ACCOUNT, Lang.HE): "חשבון Google…",
+    (S.GOOGLE_MENU_ACCOUNT, Lang.EN): "Google account…",
+    (S.GOOGLE_MENU_UPLOAD_CURRENT, Lang.HE): "העלה את התמליל הנוכחי…",
+    (S.GOOGLE_MENU_UPLOAD_CURRENT, Lang.EN): "Upload the current transcript…",
+    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.HE): "פתח את תיקיית Transcriptions בדרייב",
+    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.EN): "Open the Transcriptions folder in Drive",
+    (S.GOOGLE_MENU_ASK_EVERY_TIME, Lang.HE): "שאל לפני כל העלאה",
+    (S.GOOGLE_MENU_ASK_EVERY_TIME, Lang.EN): "Ask before every upload",
+    (S.TRANSCRIPT_UPLOAD_DRIVE, Lang.HE): "העלאת התמליל ל‑Google Drive",
+    (S.TRANSCRIPT_UPLOAD_DRIVE, Lang.EN): "Upload the transcript to Google Drive",
+    (S.UPLOAD_DIALOG_TITLE, Lang.HE): "העלאה ל‑Google Drive",
+    (S.UPLOAD_DIALOG_TITLE, Lang.EN): "Upload to Google Drive",
+    (S.UPLOAD_OK, Lang.HE): "העלה",
+    (S.UPLOAD_OK, Lang.EN): "Upload",
+    (S.UPLOAD_NAME_LABEL, Lang.HE): "שם הקובץ:",
+    (S.UPLOAD_NAME_LABEL, Lang.EN): "File name:",
+    (S.UPLOAD_TARGET_LABEL, Lang.HE): "יעד:",
+    (S.UPLOAD_TARGET_LABEL, Lang.EN): "Destination:",
+    (S.UPLOAD_IN_PROGRESS, Lang.HE): "מעלה את התמליל ל‑Google Drive…",
+    (S.UPLOAD_IN_PROGRESS, Lang.EN): "Uploading the transcript to Google Drive…",
+    (S.UPLOAD_SUCCESS, Lang.HE): "התמליל הועלה ל‑Google Drive.",
+    (S.UPLOAD_SUCCESS, Lang.EN): "The transcript was uploaded to Google Drive.",
+    (S.UPLOAD_FAILED, Lang.HE): "ההעלאה ל‑Google Drive נכשלה:",
+    (S.UPLOAD_FAILED, Lang.EN): "Upload to Google Drive failed:",
+    (S.UPLOAD_RETRY, Lang.HE): "נסה שוב",
+    (S.UPLOAD_RETRY, Lang.EN): "Retry",
+    (S.UPLOAD_OPEN_IN_DOCS, Lang.HE): "פתח ב‑Google Docs",
+    (S.UPLOAD_OPEN_IN_DOCS, Lang.EN): "Open in Google Docs",
+    (S.UPLOAD_EXISTING_TITLE, Lang.HE): "התמליל כבר הועלה",
+    (S.UPLOAD_EXISTING_TITLE, Lang.EN): "Already uploaded",
+    (S.UPLOAD_EXISTING_QUESTION, Lang.HE):
+        "התמליל הזה כבר הועלה ל‑Google Drive. מה לעשות?",
+    (S.UPLOAD_EXISTING_QUESTION, Lang.EN):
+        "This transcript was already uploaded to Google Drive. What now?",
+    (S.UPLOAD_REPLACE_EXISTING, Lang.HE): "עדכן את המסמך הקיים",
+    (S.UPLOAD_REPLACE_EXISTING, Lang.EN): "Update the existing document",
+    (S.UPLOAD_CREATE_NEW, Lang.HE): "צור מסמך חדש",
+    (S.UPLOAD_CREATE_NEW, Lang.EN): "Create a new document",
+    (S.UPLOAD_NO_NETWORK, Lang.HE): "אין חיבור לאינטרנט.",
+    (S.UPLOAD_NO_NETWORK, Lang.EN): "No internet connection.",
 
     # --- Detection type labels ---
     (S.DT_PROFANITY, Lang.HE):       "ניבול פה",

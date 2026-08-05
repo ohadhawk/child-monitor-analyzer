@@ -24,6 +24,7 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
+from .cancellation import raise_if_cancelled
 from .models import TranscribedSegment, TranscribedWord
 from .gui.strings import tr, S
 
@@ -51,6 +52,25 @@ _STT_LOCAL_DIRS: dict[str, str] = {
 # Legacy directory names from earlier installations (checked as fallback).
 _STT_LEGACY_DIRS: dict[str, str] = {
     TURBO_MODEL: "stt_turbo_backup",
+}
+
+# Pinned Hugging Face commit SHAs.
+#
+# WHY: without ``revision=``, ``snapshot_download`` follows the repository's
+# moving ``main`` branch. Anyone who gains write access to the upstream repo --
+# or the registry itself -- can change the weights we download without any
+# version bump on our side. A model repository is the most realistic
+# supply-chain entry point for this project, since the files are large,
+# binary, and fetched automatically on first run.
+#
+# Pinning to a commit SHA makes the download reproducible and makes any
+# upstream change an explicit, reviewable edit to this file.
+#
+# Captured 2026-08-03 from https://huggingface.co/api/models/<repo>
+# (both revisions dated 2025-10-27).
+_STT_REVISIONS: dict[str, str] = {
+    DEFAULT_MODEL: "e9ed4a4a98d761b0f617d668303de2c514236c66",
+    TURBO_MODEL: "72ad623a37947395efcc3933132353790e5a12f5",
 }
 
 
@@ -149,12 +169,22 @@ class HebrewSTT:
         local_dir = self._pre_download_model(on_sub_progress)
         model_source = local_dir if local_dir else self._model_name
 
+        extra: dict[str, str] = {}
+        if not local_dir:
+            # Fallback path: WhisperModel resolves the repo itself. Keep the
+            # revision pin here too, otherwise a failed pre-download would
+            # silently downgrade us to the moving 'main' branch.
+            pinned = _STT_REVISIONS.get(self._model_name)
+            if pinned:
+                extra["revision"] = pinned
+
         self._model = faster_whisper.WhisperModel(
             model_source,
             device=device,
             compute_type=compute_type,
             cpu_threads=os.cpu_count() or 4,
             num_workers=1,
+            **extra,
         )
         # BatchedInferencePipeline processes multiple VAD segments in
         # parallel, giving a significant speedup on multi-core CPUs.
@@ -338,11 +368,22 @@ class HebrewSTT:
             # local_dir copies files directly — no symlinks, no HF cache.
             # Retry with exponential backoff for transient HF rate-limit
             # errors (WinError 10054 / ConnectError).
+            #
+            # revision pins the download to an immutable commit SHA so a
+            # change upstream cannot silently swap the weights (see
+            # _STT_REVISIONS). Unknown model IDs fall back to "main".
+            revision = _STT_REVISIONS.get(self._model_name)
+            if revision is None:
+                log.warning(
+                    "No pinned revision for %s; downloading from the moving "
+                    "'main' branch.", self._model_name,
+                )
             _MAX_RETRIES = 3
             for attempt in range(1, _MAX_RETRIES + 1):
                 try:
                     snapshot_download(
                         self._model_name,
+                        revision=revision,
                         local_dir=str(stt_dir),
                         tqdm_class=tqdm_cls,
                     )
@@ -555,6 +596,7 @@ class HebrewSTT:
         segments: List[TranscribedSegment] = []
         _cached_used = 0
         for segment in raw_segments:
+            raise_if_cancelled()
             # Check if we already have this segment from a previous run.
             seg_start_key = round(segment.start, 2)
             cached_seg = _cached_by_start.pop(seg_start_key, None)
@@ -782,6 +824,7 @@ class HebrewSTT:
             )
             pos = gap_start
             while pos < gap_end:
+                raise_if_cancelled()
                 chunk_end = min(pos + chunk_s, gap_end)
                 s_idx = int(pos * sr)
                 e_idx = int(chunk_end * sr)

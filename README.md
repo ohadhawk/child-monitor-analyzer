@@ -57,6 +57,7 @@ dependencies are applied. Useful options:
    - 7.1 [Profanity Word Lists](#71-profanity-word-lists)
    - 7.2 [Detection Thresholds](#72-detection-thresholds)
    - 7.3 [Sensitivity Sliders (GUI)](#73-sensitivity-sliders-gui)
+   - 7.4 [Google Drive Upload](#74-google-drive-upload)
 8. [Project Structure](#8-project-structure)
 9. [File-Level Documentation](#9-file-level-documentation)
    - 9.1 [Core Backend](#91-core-backend)
@@ -100,6 +101,7 @@ Each detection is pinpointed to an exact timestamp. Results are presented in an 
 | **Parallel Processing** | STT and audio event detection run simultaneously in separate threads |
 | **Caching** | Intermediate STT, event, and analysis results are cached to disk |
 | **JSON Export** | Full report export with timestamps, types, confidence scores |
+| **Google Drive Upload** | Upload transcripts to Google Drive from the toolbar; tokens stored in Windows Credential Manager |
 | **CLI Interface** | Command-line interface for batch processing and scripting |
 
 ---
@@ -332,6 +334,74 @@ The GUI provides a sensitivity dialog with per-detection-type sliders. Slider po
 
 Settings persist across sessions via `QSettings`.
 
+### 7.4 Google Drive Upload
+
+The app can upload transcripts to a Google Drive folder called **Transcriptions**. To enable it you need to create a free OAuth client in the Google Cloud Console once — there is nothing to install or download.
+
+#### Step 1 — Create a Google Cloud project
+
+1. Go to <https://console.cloud.google.com/>.
+2. Click **Open project picker** (top-left, or press `Ctrl O`) → **New project**.
+3. Give it any name (e.g. `child-monitor`), leave Location as "No organisation" → **Create**.
+4. When the notification appears, click **Select project** to make it active.
+
+#### Step 2 — Enable the Google Drive API
+
+1. In the left menu: **APIs & Services → Library**.
+2. Search for **Google Drive API** → click it → **Enable**.
+
+#### Step 3 — Configure the OAuth consent screen
+
+1. **APIs & Services → OAuth consent screen**.
+2. User type: **External** → **Create**.
+3. Fill in *App name* (anything) and a *Support email*.
+4. Click **Save and continue** through the Scopes screen — you do **not** need to add scopes here.
+5. Add yourself as a test user, then **Save and continue**.
+6. On the summary page click **Publish app** → **Confirm**.
+   > Publishing to *In production* is required. The default *Testing* mode expires refresh tokens after 7 days, forcing re-authentication constantly.
+
+#### Step 4 — Create a Desktop OAuth client
+
+1. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+2. Application type: **Desktop app** → any name → **Create**.
+3. Google shows a **Client ID** (`123456789-abc123.apps.googleusercontent.com`) and a **Client secret** (`GOCSPX-…`). Copy both.
+   - You need the secret: Google's token endpoint rejects the sign-in with `client_secret is missing` without it, even though this app uses PKCE.
+   - It is not a true secret — Google's own docs note that an installed app cannot keep one. It is never written to the log.
+   - You do **not** need to download the JSON file.
+
+#### Step 5 — Configure the app
+
+**Running from source** — stores both values as environment variables for the current user:
+
+```powershell
+scripts\setup-google-drive.ps1 -ClientId "YOUR_CLIENT_ID" -ClientSecret "YOUR_CLIENT_SECRET"
+```
+
+**Building a standalone `.exe`** — bakes both into the source before `pyinstaller`:
+
+```powershell
+scripts\setup-google-drive.ps1 -ClientId "YOUR_CLIENT_ID" -ClientSecret "YOUR_CLIENT_SECRET" -PatchSource
+pyinstaller --noconfirm monitor-gui.spec
+```
+
+> Revert `src\monitor\gdrive\auth.py` after building — the patched values must not be committed.
+
+To check the current configuration without changing anything:
+
+```powershell
+scripts\setup-google-drive.ps1 -VerifyOnly
+```
+
+#### Step 6 — Sign in
+
+1. Launch the app — a Google chip appears in the toolbar.
+2. Click the chip → **Sign in to Google**.
+3. Your default browser opens the Google consent screen.
+4. Sign in and click **Allow**.
+5. The browser shows a confirmation page; the app chip updates to show your email address.
+
+The refresh token is stored in **Windows Credential Manager** and survives restarts. To disconnect, click the chip → **Sign out**.
+
 ---
 
 ## 8. Project Structure
@@ -347,6 +417,8 @@ monitor/
 │   └── he_profanity_soft.txt               # Soft profanity word list
 ├── docs/
 │   └── README.html                         # HTML copy of documentation
+├── scripts/
+│   └── setup-google-drive.ps1              # Automates Google OAuth client configuration
 └── src/
     ├── run_gui.py                          # Standalone GUI entry point (PyInstaller)
     └── monitor/
@@ -367,7 +439,14 @@ monitor/
             ├── transcript_widget.py        # Transcript viewer with search + detection markers
             ├── sensitivity_panel.py        # Per-type sensitivity sliders dialog
             ├── strings.py                  # Centralised UI string table (Hebrew + English)
+            ├── google_account.py           # Google Drive toolbar chip, menu, and link/unlink workers
             └── player_icons.py             # Programmatic vector icons for player controls
+        └── gdrive/
+            ├── __init__.py                 # GoogleDriveSession — link, unlink, upload
+            ├── auth.py                     # OAuth 2.0 + PKCE loopback flow
+            ├── client.py                   # Drive v3 REST client (urllib, no SDK)
+            ├── naming.py                   # Canonical transcript filename generation
+            └── store.py                    # Refresh token I/O via Windows Credential Manager
 ```
 
 ---
@@ -577,6 +656,10 @@ This project follows:
 | **CUDA out of memory** | The tool auto-detects GPU availability. Set `CUDA_VISIBLE_DEVICES=""` to force CPU. |
 | **No audio playback** | Ensure FFmpeg libraries are available. PySide6 bundles FFmpeg on most platforms. |
 | **Progress bar shows >100%** | Fixed in current version. If using an old build, rebuild the executable. |
+| **Google chip shows "not configured"** | Run `scripts\setup-google-drive.ps1 -VerifyOnly` to check. The `MONITOR_GOOGLE_CLIENT_ID` env var must be set, or `DEFAULT_CLIENT_ID` patched into `auth.py` before building the `.exe`. |
+| **Sign-in fails with "client_secret is missing"** | The client secret was not configured. Re-run `scripts\setup-google-drive.ps1` with both `-ClientId` and `-ClientSecret`, then restart the app. |
+| **Google sign-in opens a browser then times out** | The consent screen must be completed within 120 seconds. If the browser did not open, check that a default browser is set. |
+| **Google refresh token rejected after a few days** | The OAuth consent screen was left in *Testing* mode. Re-publish to *In production* in the Google Cloud Console (§ 3 of the setup above), then sign in again. |
 
 ---
 

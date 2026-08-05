@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from .audio_events import AudioEventDetector
+from .cancellation import raise_if_cancelled
 from .model_cache import setup_model_environment
 from .models import AnalysisReport, Detection, DetectionType, TranscribedSegment, sanitize_artifact_stem
 from .profanity import ProfanityDetector
@@ -208,6 +209,7 @@ class AnalysisPipeline:
             return cached
 
         _progress(0, "מתחיל ניתוח...")
+        raise_if_cancelled()
 
         events_only = self._stt is None
 
@@ -253,6 +255,8 @@ class AnalysisPipeline:
             _sub2(-1, -1, "")  # hide slot-1 sub-bar
             _progress(25, tr(S.PIPE_ALL_MODELS_LOADED))
 
+        raise_if_cancelled()
+
         # --- Phase 1: STT + audio events in parallel ---
         segments, audio_detections = self._run_parallel_phase(
             audio_path, _progress, _task,
@@ -268,6 +272,8 @@ class AnalysisPipeline:
         # NOTE: Intermediate caches (.stt_cache.json / .events_cache.json) are
         # intentionally kept so interrupted runs can resume.  They are only
         # removed when the user explicitly re-starts processing.
+
+        raise_if_cancelled()
 
         # --- Phase 2: Profanity detection on transcription ---
         if events_only:

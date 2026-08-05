@@ -36,6 +36,11 @@ build/
 
 # Per-file analysis output folders (contain analysis.json, etc.)
 20260*/
+2023-*/
+*(trim)/
+
+# Google Drive upload sidecars (hold an account id and Drive file ids)
+gdrive_*.json
 
 # Hebrew-named analysis output folders
 יאן*/
@@ -50,6 +55,7 @@ pip_output.txt
 # Build archives
 child_monitor_analyzer.zip
 monitor.zip
+child-monitor-analyzer-patch-*.zip
 
 # Probe / debug output
 gap_probe_out.txt

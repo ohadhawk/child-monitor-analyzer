@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..gdrive.naming import build_transcript_base_name
 from ..models import Detection, DetectionType, TranscribedSegment, DETECTION_LABELS_HE
 from .strings import tr, S
 
@@ -81,10 +83,52 @@ def _format_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+#: Elements that must follow ``w:bidi`` inside ``w:pPr`` (ECMA-376 CT_PPr).
+#: Word tolerates the wrong order; the Google Docs importer discards the
+#: misplaced element, which silently loses right-to-left paragraph direction.
+_AFTER_BIDI = (
+    "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+    "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc",
+    "w:textDirection", "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl",
+    "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange",
+)
+
+
+def _set_bidi(p_pr) -> None:
+    """Mark a ``w:pPr`` right-to-left, in schema order."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    if p_pr.find(qn("w:bidi")) is not None:
+        return
+    p_pr.insert_element_before(OxmlElement("w:bidi"), *_AFTER_BIDI)
+
+
+#: Font for the exported .docx. A humanist sans renders Hebrew far better than
+#: the serif default python-docx inherits from its template.
+EXPORT_FONT = "Arial"
+
+
+def _set_font(r_pr, name: str) -> None:
+    """Apply *name* to Latin **and** complex-script runs.
+
+    Hebrew is a complex script, so it takes ``w:cs``; setting only the Latin
+    attributes would leave the Hebrew on the template's default font.
+    """
+    from docx.oxml.ns import qn
+
+    fonts = r_pr.get_or_add_rFonts()
+    for attribute in ("w:ascii", "w:hAnsi", "w:cs"):
+        fonts.set(qn(attribute), name)
+
+
 # QSettings location (shared app-wide store) and export-preference keys.
 _SETTINGS_ORG = "ChildMonitorAnalyzer"
 _SETTINGS_APP = "monitor-gui"
 _EXPORT_FORMAT_KEY = "export_format"
+#: Upload keeps its own format preference: txt converts to a Google Doc with no
+#: paragraph alignment, so a local txt export must not silently downgrade it.
+_UPLOAD_FORMAT_KEY = "upload_format"
 _EXPORT_TIMESTAMPS_KEY = "export_include_timestamps"
 _EXPORT_EVENTS_KEY = "export_include_events"
 
@@ -92,12 +136,30 @@ _EXPORT_EVENTS_KEY = "export_include_events"
 class TranscriptExportDialog(QDialog):
     """Ask the user for transcript export format and content options.
 
+    One dialog serves both destinations. Forking it into a separate upload
+    dialog would let the two option sets drift apart, and the requirement is
+    that the same choices apply whether the transcript is saved locally or
+    uploaded.
+
     Remembers the last choices via QSettings.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        mode: str = "download",
+        target_description: str = "",
+        default_name: str = "",
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr(S.EXPORT_DIALOG_TITLE))
+        if mode not in ("download", "upload"):
+            raise ValueError(f"unknown export dialog mode: {mode!r}")
+        self._mode = mode
+        self.setWindowTitle(
+            tr(S.UPLOAD_DIALOG_TITLE) if mode == "upload"
+            else tr(S.EXPORT_DIALOG_TITLE)
+        )
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
 
@@ -118,12 +180,35 @@ class TranscriptExportDialog(QDialog):
         layout.addWidget(self._chk_timestamps)
         layout.addWidget(self._chk_events)
 
+        # --- Destination (upload only) ---
+        # Informed consent: the user must see exactly where the transcript is
+        # going, and under what name, *before* confirming.
+        self._edit_name: Optional[QLineEdit] = None
+        if mode == "upload":
+            name_row = QHBoxLayout()
+            name_row.addWidget(QLabel(tr(S.UPLOAD_NAME_LABEL)))
+            self._edit_name = QLineEdit(default_name)
+            self._edit_name.setClearButtonEnabled(True)
+            # Transcript names are long; show the whole one without scrolling.
+            fitted = self._edit_name.fontMetrics().horizontalAdvance(default_name)
+            self._edit_name.setMinimumWidth(min(620, max(320, fitted + 48)))
+            self._edit_name.setCursorPosition(0)
+            name_row.addWidget(self._edit_name, stretch=1)
+            layout.addLayout(name_row)
+        if mode == "upload" and target_description:
+            target = QLabel(f"{tr(S.UPLOAD_TARGET_LABEL)} {target_description}")
+            target.setWordWrap(True)
+            target.setStyleSheet("color: #555; padding-top: 6px;")
+            layout.addWidget(target)
+
         # --- Buttons ---
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText(tr(S.EXPORT_OK))
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(
+            tr(S.UPLOAD_OK) if mode == "upload" else tr(S.EXPORT_OK)
+        )
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr(S.EXPORT_CANCEL))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -133,9 +218,15 @@ class TranscriptExportDialog(QDialog):
 
     def _load_prefs(self) -> None:
         """Populate the widgets from the last saved choices."""
-        fmt = self._settings.value(_EXPORT_FORMAT_KEY, "txt", type=str)
-        if fmt not in ("txt", "docx"):
-            fmt = "txt"
+        if self._mode == "upload":
+            # docx round-trips right-to-left formatting into a Google Doc.
+            fmt = self._settings.value(_UPLOAD_FORMAT_KEY, "docx", type=str)
+            if fmt not in ("txt", "docx"):
+                fmt = "docx"
+        else:
+            fmt = self._settings.value(_EXPORT_FORMAT_KEY, "txt", type=str)
+            if fmt not in ("txt", "docx"):
+                fmt = "txt"
         idx = self._cmb_format.findData(fmt)
         self._cmb_format.setCurrentIndex(max(0, idx))
         self._chk_timestamps.setChecked(
@@ -147,13 +238,28 @@ class TranscriptExportDialog(QDialog):
 
     def accept(self) -> None:
         """Persist the current choices before closing."""
-        self._settings.setValue(_EXPORT_FORMAT_KEY, self.selected_format())
+        key = _UPLOAD_FORMAT_KEY if self._mode == "upload" else _EXPORT_FORMAT_KEY
+        self._settings.setValue(key, self.selected_format())
         self._settings.setValue(_EXPORT_TIMESTAMPS_KEY, self.include_timestamps())
         self._settings.setValue(_EXPORT_EVENTS_KEY, self.include_events())
         super().accept()
 
     def selected_format(self) -> str:
         return self._cmb_format.currentData() or "txt"
+
+    def selected_name(self) -> str:
+        """The chosen upload name, sanitised, or ``""`` if left blank.
+
+        A hand-typed name is as untrusted as the audio stem it defaults to, so
+        it goes through the same choke point rather than reaching Drive raw.
+        Blank means "keep the default" -- sanitising it would yield the generic
+        fallback name instead.
+        """
+        from ..gdrive.naming import sanitize_display_name
+
+        if self._edit_name is None or not self._edit_name.text().strip():
+            return ""
+        return sanitize_display_name(self._edit_name.text())
 
     def include_timestamps(self) -> bool:
         return self._chk_timestamps.isChecked()
@@ -166,6 +272,7 @@ class TranscriptWidget(QWidget):
     """Scrollable transcript panel with timestamps and click-to-seek."""
 
     play_requested = Signal(float)
+    upload_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -177,6 +284,7 @@ class TranscriptWidget(QWidget):
         self._visible_types: Optional[set] = None  # None = show all
 
         # Source context used to build the default export filename.
+        self._audio_path: Optional[str] = None
         self._audio_stem: Optional[str] = None
         self._model_key: Optional[str] = None
 
@@ -230,6 +338,12 @@ class TranscriptWidget(QWidget):
         self._btn_download.setToolTip(tr(S.TRANSCRIPT_DOWNLOAD))
         self._btn_download.clicked.connect(self._download_transcript)
         search_row.addWidget(self._btn_download)
+
+        self._btn_upload = QPushButton("↑")
+        self._btn_upload.setFixedWidth(28)
+        self._btn_upload.setToolTip(tr(S.TRANSCRIPT_UPLOAD_DRIVE))
+        self._btn_upload.clicked.connect(self.upload_requested.emit)
+        search_row.addWidget(self._btn_upload)
 
         layout.addLayout(search_row)
 
@@ -355,20 +469,50 @@ class TranscriptWidget(QWidget):
         self, audio_path: Optional[str], model_key: Optional[str],
     ) -> None:
         """Record the audio file and STT model used for the default export name."""
+        self._audio_path = audio_path
         self._audio_stem = Path(audio_path).stem.strip() if audio_path else None
         self._model_key = model_key
 
+    def export_source(self) -> tuple[Optional[str], Optional[str]]:
+        """Return ``(audio_path, model_key)`` for the shown transcript."""
+        return self._audio_path, self._model_key
+
+    def has_content(self) -> bool:
+        """Return True if there is anything to export."""
+        return bool(self._segments or self._detections)
+
+    def default_export_name(self) -> str:
+        """Return the canonical transcript base name (no extension)."""
+        return self._default_export_name()
+
     def _default_export_name(self) -> str:
-        """Build the default export base name: '<audio-file> <תמלול …>'."""
+        """Build the canonical export base name.
+
+        Delegates to :mod:`monitor.gdrive.naming` so the local ``.txt``, the
+        local ``.docx`` and the Google Doc all get byte-identical names.
+        """
         model_label = {
             "thorough": tr(S.EXPORT_NAME_THOROUGH),
             "fast": tr(S.EXPORT_NAME_FAST),
         }.get(self._model_key or "")
-        if self._audio_stem and model_label:
-            return f"{self._audio_stem} {model_label}"
-        if self._audio_stem:
-            return self._audio_stem
-        return "transcript"
+        return build_transcript_base_name(
+            self._audio_path, self._model_key, model_label=model_label,
+        )
+
+    def build_export_bytes(
+        self, fmt: str, include_timestamps: bool, include_events: bool,
+    ) -> bytes:
+        """Return the transcript encoded in *fmt* (``"txt"`` or ``"docx"``).
+
+        Uses the same line builder as the local save, so an uploaded document
+        is byte-identical to a downloaded one for the same options.
+        """
+        lines = self._build_transcript_lines(include_timestamps, include_events)
+        if fmt == "docx":
+            buffer = io.BytesIO()
+            self._write_docx(buffer, lines)
+            return buffer.getvalue()
+        return "\n".join(lines).encode("utf-8")
 
     def _download_transcript(self) -> None:
         """Prompt for options + a path and save the currently-shown transcript."""
@@ -419,33 +563,37 @@ class TranscriptWidget(QWidget):
             )
 
     @staticmethod
-    def _write_docx(path: str, lines: list[str]) -> None:
-        """Write *lines* to a .docx with right-to-left, right-aligned text."""
+    def _write_docx(path, lines: list[str]) -> None:
+        """Write *lines* to a .docx with right-to-left, right-aligned text.
+
+        Args:
+            path: Destination path, or any binary file-like object (used by
+                the upload path, which needs the bytes rather than a file).
+            lines: Transcript lines.
+        """
         from docx import Document
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
 
         doc = Document()
         # Make the default 'Normal' style right-to-left so every paragraph
         # (including empty ones) renders as RTL.
-        normal_ppr = doc.styles["Normal"].element.get_or_add_pPr()
-        if normal_ppr.find(qn("w:bidi")) is None:
-            normal_ppr.append(OxmlElement("w:bidi"))
+        normal = doc.styles["Normal"].element
+        _set_bidi(normal.get_or_add_pPr())
+        _set_font(normal.get_or_add_rPr(), EXPORT_FONT)
 
         for line in lines:
             para = doc.add_paragraph()
-            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            # Paragraph-level RTL (belt-and-suspenders alongside the style).
-            p_pr = para._p.get_or_add_pPr()
-            if p_pr.find(qn("w:bidi")) is None:
-                p_pr.append(OxmlElement("w:bidi"))
+            # No w:jc: it is *logical*, so "right" means the end edge, which is
+            # the left one in an RTL paragraph. The w:bidi default already
+            # aligns to the start edge -- verified against a Google Docs render.
+            _set_bidi(para._p.get_or_add_pPr())
             run = para.add_run(line)
             # Run-level RTL so mixed neutrals (brackets, timestamps) order
             # correctly within the Hebrew text.
             r_pr = run._r.get_or_add_rPr()
-            rtl = OxmlElement("w:rtl")
-            r_pr.append(rtl)
+            if r_pr.find(qn("w:rtl")) is None:
+                r_pr.append(OxmlElement("w:rtl"))
 
         doc.save(path)
 

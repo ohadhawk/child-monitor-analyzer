@@ -1,14 +1,72 @@
 # Core dependencies for Child Monitor Analyzer.
-# Install with: pip install -r requirements.txt
 #
-# For editable install with dev tools instead:
+# HOW TO INSTALL
+# --------------
+# Production installs MUST use the hash-pinned lockfile, which makes pip reject
+# any artifact whose SHA-256 does not match the reviewed release:
+#
+#     pip install --require-hashes --only-binary=:all: -r requirements.lock
+#     pip install --no-deps -e .
+#
+# install.ps1 does this automatically when requirements.lock is present.
+#
+# Regenerate the lockfile after changing anything below:
+#
+#     uv pip compile requirements.txt --generate-hashes \
+#         --index-url https://pypi.org/simple \
+#         --extra-index-url https://download.pytorch.org/whl/xpu \
+#         --index-strategy unsafe-best-match \
+#         --output-file requirements.lock
+#
+# (pip-tools is not usable here: it imports pip internals and breaks on
+# pip >= 26. uv resolves the same requirements without that coupling. The
+# second index is needed for the Intel XPU torch build; --generate-hashes is
+# what keeps a second index safe, because a substituted package fails its
+# hash regardless of which index served it.)
+#
+# WHY THE UPPER BOUNDS
+# --------------------
+# Every constraint below is capped below the next major version. An uncapped
+# range means a single upstream release -- benign or malicious -- lands in the
+# next fresh install with no review. The caps turn that into a deliberate,
+# reviewable bump. Lower bounds match the versions the test suite runs against.
+#
+# WHAT IS NOT HERE
+# ----------------
+# panns-inference and torchlibrosa were REMOVED and vendored into
+# src/monitor/vendor/panns/. Both were last released in early 2023 by a single
+# maintainer with no release attestations, and panns_inference imported
+# matplotlib at module level -- dragging matplotlib and Pillow (27 open
+# advisories) into the shipped binary for zero runtime benefit.
+#
+# For an editable install with dev tools instead:
 #   pip install -e ".[dev]"
 
-faster-whisper>=1.0.0
-panns-inference>=0.1.0
-librosa>=0.10.0
-torch>=2.0.0
-transformers>=4.30.0
-PySide6>=6.5.0
-numpy>=1.24.0
-python-docx>=1.0.0
+faster-whisper>=1.2.1,<2
+librosa>=0.11.0,<0.12
+torch>=2.11.0,<3
+transformers>=5.5.4,<6
+PySide6>=6.11.0,<7
+numpy>=2.4.4,<3
+python-docx>=1.2.0,<2
+
+# Google Drive upload: refresh tokens go to the Windows Credential Manager
+# (DPAPI, per-user + per-machine). Deliberately NOT google-api-python-client /
+# google-auth-oauthlib -- the whole OAuth + Drive surface we need is a few
+# hundred lines of urllib, and a package that handles OAuth credentials is the
+# last place to widen the supply-chain surface.
+keyring>=25.6.0,<26
+
+# --- Security floors (OSV scan, 2026-08-03) ---
+# Transitive packages we do not import directly but which ship in the install.
+# urllib3 < 2.7.0: sensitive headers forwarded across origins on proxied
+#   redirects (GHSA-qccp-gfcp-xxvc, HIGH) and decompression-bomb safeguards
+#   bypassed in the streaming API (GHSA-mf9v-mfxr-j63j, HIGH). Reachable via
+#   huggingface_hub, and install.ps1 explicitly supports proxied installs.
+# idna < 3.15: crafted input bypasses the CVE-2024-3651 fix in idna.encode()
+#   (GHSA-65pc-fj4g-8rjx).
+# msgpack < 1.2.1: out-of-bounds read on Unpacker reuse
+#   (GHSA-6v7p-g79w-8964, HIGH).
+urllib3>=2.7.0
+idna>=3.15
+msgpack>=1.2.1

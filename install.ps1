@@ -50,6 +50,7 @@ $ErrorActionPreference = "Stop"
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "    $msg" -ForegroundColor Yellow }
 
 # --- Resolve install directory ---------------------------------------------
 # If run from inside an existing clone, update that clone in place.
@@ -126,8 +127,46 @@ if (-not $SkipInstall) {
     Write-Step "Installing / updating dependencies (this can take a while the first time)"
     $pipProxyArgs = @()
     if ($Proxy) { $pipProxyArgs = @("--proxy", $Proxy) }
-    & $venvPy -m pip install @pipProxyArgs --upgrade pip
-    & $venvPy -m pip install @pipProxyArgs -e $InstallDir
+
+    # Supply-chain hardening for every pip invocation below:
+    #   --index-url            pin to the official PyPI index explicitly, so a
+    #                          stray PIP_EXTRA_INDEX_URL / pip.ini entry cannot
+    #                          shadow a real package with a look-alike from
+    #                          another index (dependency confusion).
+    #   --disable-pip-version-check / --no-input
+    #                          keep the run non-interactive and quiet.
+    $pipSafeArgs = @(
+        "--index-url", "https://pypi.org/simple",
+        "--disable-pip-version-check",
+        "--no-input"
+    )
+
+    # pip 26.1.2+ fixes several advisories in 25.x; upgrade it first so the
+    # rest of the install runs on the patched resolver.
+    & $venvPy -m pip install @pipProxyArgs @pipSafeArgs --upgrade "pip>=26.1.2"
+    if ($LASTEXITCODE -ne 0) { throw "pip self-upgrade failed (exit $LASTEXITCODE)" }
+
+    # Prefer the hash-pinned lockfile when it is present: --require-hashes
+    # makes pip reject any artifact whose SHA-256 is not listed, which is the
+    # single most effective defence against a compromised or substituted
+    # package release. Fall back to the loose install if the lock is absent.
+    $lockFile = Join-Path $InstallDir "requirements.lock"
+    if (Test-Path $lockFile) {
+        Write-Step "Installing pinned dependencies from requirements.lock (hash-verified)"
+        & $venvPy -m pip install @pipProxyArgs @pipSafeArgs `
+            --require-hashes --only-binary=:all: -r $lockFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Hash-verified dependency install failed (exit $LASTEXITCODE). " +
+                  "Do NOT bypass this: a hash mismatch means the downloaded " +
+                  "package does not match the reviewed release."
+        }
+        # Install the project itself without touching the pinned dependency set.
+        & $venvPy -m pip install @pipProxyArgs @pipSafeArgs --no-deps -e $InstallDir
+    } else {
+        Write-Warn "requirements.lock not found - installing without hash verification"
+        & $venvPy -m pip install @pipProxyArgs @pipSafeArgs -e $InstallDir
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Dependency install failed (exit $LASTEXITCODE)" }
     Write-Ok "Dependencies are up to date"
 }
 

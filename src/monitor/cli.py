@@ -160,6 +160,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(pathname)s: %(message)s",
     )
+    from .log_redaction import install_redaction
+    install_redaction()
+    install_redaction("")  # basicConfig puts its handler on the root logger
 
     log.info("Starting analysis of %s", args.audio)
 

@@ -1,0 +1,100 @@
+Third-party licences for code vendored into ``monitor.vendor.panns``
+====================================================================
+
+This package contains code derived from two MIT-licensed projects by
+Qiuqiang Kong.  Both are reproduced under the terms below.
+
+
+1. panns_inference
+------------------
+Source:  https://github.com/qiuqiangkong/panns_inference
+Version: 0.1.1
+Files derived: ``inference.py``, ``_models.py``, ``labels.py``
+
+    MIT License
+
+    Copyright (c) 2020 Qiuqiang Kong
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+
+2. torchlibrosa
+---------------
+Source:  https://github.com/qiuqiangkong/torchlibrosa
+Version: 0.1.0
+Files derived: ``_stft.py``
+
+    MIT License
+
+    Copyright (c) 2020 Qiuqiang Kong
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+
+Model weights
+-------------
+The ``Cnn14_DecisionLevelMax`` checkpoint itself is NOT vendored.  It is
+downloaded at first run from Zenodo (record 3987831) and verified against a
+pinned SHA-256 digest before use.  The weights are published by the same
+author under the terms stated at
+https://github.com/qiuqiangkong/audioset_tagging_cnn
+
+The AudioSet class-label CSV is published by Google under CC-BY-4.0.
+
+
+Modifications made when vendoring
+---------------------------------
+The vendored code is not a verbatim copy.  Behaviour-preserving changes:
+
+* Removed ``os.system('wget ...')`` auto-download calls.  Upstream
+  interpolated a filesystem path directly into a shell command line, which is
+  a command-injection vector and additionally requires ``wget`` (absent on
+  Windows).  Downloads are handled by ``monitor.model_cache`` with digest
+  verification.
+* ``torch.load(..., weights_only=True)`` — upstream used unrestricted pickle
+  deserialisation, which is arbitrary code execution on a tampered checkpoint.
+* Removed the module-level ``import matplotlib.pyplot``.  It was unused at
+  runtime but forced matplotlib (and Pillow) into the shipped binary.
+* Removed the module-level read of ``~/panns_data/class_labels_indices.csv``
+  and its implicit network fetch; labels are now loaded from an explicit path.
+* Removed training-only code paths (SpecAugmentation, mixup, weight
+  initialisation) that cannot execute during inference.
+* Removed the unused ``Cnn14``/``AudioTagging`` tagging model, ``DFT``,
+  ``ISTFT``, ``Enframe`` and ``Scalar``.
+* Replaced ``print()`` with the standard ``logging`` module.
+* Added explicit XPU/CUDA/CPU device selection and type annotations.
+
+The numerical behaviour of the retained inference path is unchanged; this is
+enforced by ``tests/test_vendor_panns_parity.py``.
