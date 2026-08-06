@@ -114,6 +114,49 @@ app** OAuth client, and configure the consent screen with the three scopes
 above. Publish the app to **In production** — while it is in *Testing*, Google
 expires refresh tokens after 7 days, which would force a re-login every week.
 
+### Branding
+
+The account button shows Google's official Drive mark, shipped verbatim from
+their own CDN and never recoloured, greyed out or overlaid. Every other state
+— signed out, unavailable, signing in — falls back to a neutral cloud glyph we
+draw ourselves, because dimming the mark is exactly the alteration Google's
+brand guidelines forbid. Provenance, retrieval date and the file's SHA-256 are
+recorded in `src/monitor/gui/assets/NOTICE.txt`, and a test pins that hash so
+the asset cannot drift.
+
+## Update checking
+
+The app can ask GitHub whether a newer version has been released. It is
+**metadata only** — no payload is ever downloaded, verified or executed, so the
+usual updater threat model (signing keys, rollback protection, elevation) does
+not apply.
+
+- **Off until asked.** The first run poses a single question and stores the
+  answer; nothing is sent before it is answered. The **עדכונים** menu can
+  change it later, and a manual check is always available.
+- **What leaves the machine.** One HTTPS GET to `api.github.com`, no more often
+  than the chosen interval (never, daily, weekly or monthly). It carries only a
+  `User-Agent` of `child-monitor-analyzer/<version>`.
+  No recordings, transcripts, file names or account details. GitHub necessarily
+  sees the IP address — that is the whole of the privacy cost, and it is why
+  the feature is opt-in.
+- **The browser only ever receives a constant.** `QDesktopServices.openUrl`
+  reaches `ShellExecute` on Windows, which happily accepts `file://` paths and
+  UNC paths (the latter leaks an NTLM hash). The releases URL is therefore a
+  hard-coded constant, validated against an https/github.com allowlist even so,
+  and opened only on an explicit click. `tests/test_update_check.py` asserts
+  statically that no response-derived value can reach it.
+- **Only strictly newer versions are announced**, and the version shown is
+  rebuilt from the parsed digits rather than echoed from the response, so a
+  hostile tag cannot smuggle text or bidi overrides into a dialog.
+
+**Accepted risk — freeze attack.** Anyone able to block or stall the network
+can suppress update notices indefinitely, and the user would see nothing
+(automatic failures are deliberately silent, so a flaky connection never
+interrupts). Preventing this requires signed, expiring metadata (TUF-style).
+It is accepted here because nothing installs automatically: the worst outcome
+is that the user is not told about a release they can still find manually.
+
 ## Routine maintenance
 
 ```powershell

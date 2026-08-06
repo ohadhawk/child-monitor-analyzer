@@ -58,6 +58,7 @@ dependencies are applied. Useful options:
    - 7.2 [Detection Thresholds](#72-detection-thresholds)
    - 7.3 [Sensitivity Sliders (GUI)](#73-sensitivity-sliders-gui)
    - 7.4 [Google Drive Upload](#74-google-drive-upload)
+   - 7.5 [Update Checking](#75-update-checking)
 8. [Project Structure](#8-project-structure)
 9. [File-Level Documentation](#9-file-level-documentation)
    - 9.1 [Core Backend](#91-core-backend)
@@ -402,6 +403,31 @@ scripts\setup-google-drive.ps1 -VerifyOnly
 
 The refresh token is stored in **Windows Credential Manager** and survives restarts. To disconnect, click the chip → **Sign out**.
 
+### 7.5 Update Checking
+
+The **עדכונים** (Updates) button on the toolbar opens a menu with four entries:
+
+| Entry | What it does |
+|---|---|
+| **בדוק עדכון למודלים** | Asks HuggingFace whether new Hebrew transcription models have been published. |
+| **בדוק עדכונים למודלים אוטומאטית** | How often to do that by itself: **אף פעם / כל יום / כל שבוע / כל חודש**. |
+| **בדוק עדכונים לתוכנה** | Asks GitHub whether a newer version of the app has been released. |
+| **בדוק עדכונים לתוכנה אוטומאטית** | How often to do that by itself, with the same four choices. |
+
+Nothing is downloaded or installed. A newer version simply offers to open the
+releases page; you decide whether to upgrade.
+
+Both automatic checks start at **אף פעם**. On first run the app asks once
+whether it may check for application updates by itself — answering yes sets it
+to **כל יום**, and the menu changes it afterwards. Model checks are never
+prompted for; switch them on from the menu if you want them. An automatic check
+stays silent unless there is something new, so a lost connection never
+interrupts you, and a version you dismissed is not offered again.
+
+The requests carry no recordings, transcripts or account details — only the app
+name and version. GitHub and HuggingFace do see your IP address, which is why
+the choice is yours to make. See `docs/SECURITY.md` for the full rationale.
+
 ---
 
 ## 8. Project Structure
@@ -668,3 +694,11 @@ This project follows:
 MIT License. See [LICENSE](LICENSE) for full text.
 
 Third-party dependencies have their own licenses — see §10 Technology Stack.
+
+### Trademarks
+
+Google Drive is a trademark of Google Inc. Use of this trademark is subject to
+Google Permissions. This project is not affiliated with, endorsed by, or
+sponsored by Google. The Drive logo ships unaltered under Google's
+[branding guidelines](https://developers.google.com/workspace/drive/api/guides/branding);
+see [src/monitor/gui/assets/NOTICE.txt](src/monitor/gui/assets/NOTICE.txt).

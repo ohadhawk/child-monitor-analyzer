@@ -31,10 +31,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import (
-    QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot,
+    QObject, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot,
     QtMsgType, qInstallMessageHandler,
 )
-from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import (
+    QAction, QActionGroup, QDesktopServices, QDragEnterEvent, QDropEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -64,6 +66,11 @@ from ..analysis_worker import (
 )
 from ..model_cache import setup_model_environment
 from ..model_updates import fetch_new_hebrew_models
+from .. import __version__
+from ..update_check import (
+    DAILY, MONTHLY, NEVER, WEEKLY, UpdateRateLimited,
+    check_for_update, interval_for, is_due, releases_url,
+)
 from ..models import (
     AnalysisReport, Detection, DetectionType,
     TranscribedSegment, TranscribedWord, sanitize_artifact_stem,
@@ -111,6 +118,31 @@ SETTINGS_ORG = "ChildMonitorAnalyzer"
 SETTINGS_APP = "monitor-gui"
 SETTINGS_RECENT_KEY = "recent_files"
 SETTINGS_STT_MODEL_KEY = "stt_model"
+#: Absent on purpose: it means "the user has not been asked yet", which is
+#: what triggers the one-time consent prompt. Values come from update_check.
+SETTINGS_UPDATE_FREQUENCY_KEY = "update_check_frequency"
+SETTINGS_UPDATE_LAST_CHECKED_KEY = "update_last_checked"
+#: Suppresses a repeat notice for a version the user already declined.
+SETTINGS_UPDATE_LAST_NOTIFIED_KEY = "update_last_notified_version"
+#: Model checks are never prompted for, so absent simply means never.
+SETTINGS_MODEL_FREQUENCY_KEY = "model_check_frequency"
+SETTINGS_MODEL_LAST_CHECKED_KEY = "model_last_checked"
+
+#: Menu order for both automatic-check submenus.
+FREQUENCY_CHOICES = (
+    (NEVER, S.FREQ_NEVER),
+    (DAILY, S.FREQ_DAILY),
+    (WEEKLY, S.FREQ_WEEKLY),
+    (MONTHLY, S.FREQ_MONTHLY),
+)
+
+#: Long enough for the window to finish painting before a prompt can appear.
+UPDATE_CHECK_DELAY_MS = 1200
+
+#: How long the UI waits for a Drive operation before it stops waiting. Only a
+#: backstop: the OAuth wait (120s) and the HTTP retry budget both expire well
+#: inside it, so reaching this means a worker that will never report at all.
+GDRIVE_WATCHDOG_MS = 300_000
 
 # STT model identifiers (must match values stored in QSettings).
 STT_MODEL_THOROUGH = "thorough"  # ivrit-ai/whisper-large-v3-ct2
@@ -173,6 +205,68 @@ class _ModelCheckWorker(QObject):
         except Exception as exc:  # noqa: BLE001 - reported to the user
             log.warning("New-model check failed: %s", exc)
             self.failed.emit(str(exc))
+
+
+class _UpdateCheckWorker(QObject):
+    """Runs the release-metadata query off the GUI thread.
+
+    Emits ``finished(str)`` with the newer version, or ``""`` when current.
+    Emits ``failed(str)`` instead if the check could not complete. Never raises.
+    """
+
+    finished = Signal(str)
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.finished.emit(check_for_update() or "")
+        except UpdateRateLimited:
+            log.info("Update check: rate-limited by GitHub.")
+            self.failed.emit(tr(S.UPDATE_RATE_LIMITED))
+        except Exception as exc:  # noqa: BLE001 - surfaced only if user asked
+            log.info("Update check failed: %s", exc)
+            self.failed.emit(str(exc))
+
+
+class _GDriveRelay(QObject):
+    """Carries one Drive operation's result back to the GUI thread.
+
+    It exists for two reasons. First, correctness: a plain function connected
+    to a worker's signal runs on the worker's thread, so the handlers would
+    touch widgets from the wrong thread. Being a QObject parented to the
+    window, this relay has GUI-thread affinity and Qt queues the emission
+    across the boundary for us.
+
+    Second, cancellation: retiring one relay silences exactly one operation, so
+    a result the watchdog already gave up on can be dropped without
+    disconnecting anything — and disconnecting a worker's signal from the GUI
+    thread is precisely what deadlocks Qt's locks against the GIL.
+    """
+
+    def __init__(self, parent, on_finished, on_failed, deliver, on_done) -> None:
+        super().__init__(parent)
+        self._on_finished, self._on_failed = on_finished, on_failed
+        self._deliver, self._on_done = deliver, on_done
+        self.live = True
+
+    def retire(self) -> None:
+        """Stop passing this operation's results on."""
+        self.live = False
+
+    @Slot(object)
+    def on_finished(self, payload: object) -> None:
+        if self.live:
+            self._deliver(self._on_finished, payload)
+
+    @Slot(str)
+    def on_failed(self, message: str) -> None:
+        if self.live:
+            self._deliver(self._on_failed, message)
+
+    @Slot()
+    def on_thread_done(self) -> None:
+        self._on_done(self)
 
 
 # ===========================
@@ -244,6 +338,15 @@ class MainWindow(QMainWindow):
         self._gdrive_store_ok: Optional[bool] = None
         self._gdrive_progress = None
         self._last_upload_request: Optional[dict] = None
+        # The current operation's mailbox; retiring it silences a result the
+        # watchdog has already given up on.
+        self._gdrive_relay: Optional[_GDriveRelay] = None
+        # Threads the watchdog abandoned. Held until they really stop, because
+        # destroying a running QThread aborts the process.
+        self._gdrive_abandoned: List[tuple] = []
+        self._gdrive_watchdog = QTimer(self)
+        self._gdrive_watchdog.setSingleShot(True)
+        self._gdrive_watchdog.timeout.connect(self._on_gdrive_timeout)
 
         # Enable drag-and-drop on the main window.
         self.setAcceptDrops(True)
@@ -252,12 +355,19 @@ class MainWindow(QMainWindow):
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self._recent_files: List[str] = self._load_recent_files()
 
+        self._update_thread: Optional[QThread] = None
+        self._update_worker: Optional["_UpdateCheckWorker"] = None
+        self._update_announce = False
+
         self._build_ui()
         self._update_recent_menu()
 
         # Auto-load the most recent file after the event loop starts.
         if self._recent_files:
             QTimer.singleShot(0, self._auto_load_last_file)
+        # Delayed so the window is painted before any consent prompt appears,
+        # and so a first run never races the auto-loaded file.
+        QTimer.singleShot(UPDATE_CHECK_DELAY_MS, self._run_startup_checks)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -443,14 +553,21 @@ class MainWindow(QMainWindow):
             self._cmb_stt_model.setCurrentIndex(idx)
         self._cmb_stt_model.currentIndexChanged.connect(self._on_stt_model_changed)
 
-        # Compact button to check HuggingFace for new Hebrew models.
-        self._btn_check_models = QToolButton()
-        self._btn_check_models.setFixedHeight(36)
-        self._btn_check_models.setText(tr(S.CHECK_MODELS))
-        self._btn_check_models.setToolTip(tr(S.CHECK_MODELS_TOOLTIP))
-        self._btn_check_models.clicked.connect(self._check_new_models)
+        # Menu button gathering the model and application update controls.
+        self._btn_updates = QToolButton()
+        self._btn_updates.setFixedHeight(36)
+        self._btn_updates.setText(tr(S.UPDATES_BUTTON))
+        self._btn_updates.setToolTip(tr(S.UPDATES_TOOLTIP))
+        self._btn_updates.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._model_check_thread: Optional[QThread] = None
         self._model_check_worker: Optional["_ModelCheckWorker"] = None
+        self._model_announce = True
+        self._frequency_actions: dict[str, dict[str, QAction]] = {}
+        self._updates_menu = QMenu(self)
+        self._build_updates_menu()
+        self._updates_menu.aboutToShow.connect(self._refresh_updates_menu)
+        self._refresh_updates_menu()
+        self._btn_updates.setMenu(self._updates_menu)
 
         self._lbl_file = QLineEdit(tr(S.NO_FILE_SELECTED))
         self._lbl_file.setReadOnly(True)
@@ -476,6 +593,12 @@ class MainWindow(QMainWindow):
         self._btn_google = QToolButton()
         self._btn_google.setFixedHeight(36)
         self._btn_google.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # The chip carries no text, so the glyph gets the whole button.
+        self._btn_google.setIconSize(QSize(30, 30))
+        self._btn_google.setStyleSheet(
+            "QToolButton { padding: 0px; }"
+            "QToolButton::menu-indicator { image: none; width: 0px; }"
+        )
         self._google_menu = QMenu(self)
         self._google_menu.aboutToShow.connect(self._rebuild_google_menu)
         self._btn_google.setMenu(self._google_menu)
@@ -486,7 +609,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self._lbl_elapsed)
         top_bar.addWidget(self._lbl_file, stretch=1)
         top_bar.addWidget(self._cmb_stt_model)
-        top_bar.addWidget(self._btn_check_models)
+        top_bar.addWidget(self._btn_updates)
         top_bar.addWidget(self._btn_sensitivity)
         top_bar.addWidget(self._btn_google)
         top_bar.addWidget(self._btn_recent)
@@ -542,9 +665,16 @@ class MainWindow(QMainWindow):
         if self._model_check_thread is not None:
             self._model_check_thread.quit()
             self._model_check_thread.wait(3000)
+        if self._update_thread is not None:
+            self._update_thread.quit()
+            self._update_thread.wait(3000)
         # Same for a Drive operation: destroying a running QThread aborts the
         # process. The OAuth loopback wait is the long pole, hence the timeout.
         if self._gdrive_thread is not None:
+            self._gdrive_watchdog.stop()
+            # Without this the loopback wait keeps running and the wait below
+            # is guaranteed to time out.
+            self._cancel_gdrive_worker()
             self._gdrive_thread.quit()
             if not self._gdrive_thread.wait(5000):
                 log.warning("A Google Drive operation did not finish before exit.")
@@ -749,15 +879,20 @@ class MainWindow(QMainWindow):
     # New-model check
     # ------------------------------------------------------------------
 
-    @Slot()
-    def _check_new_models(self) -> None:
-        """Query HuggingFace (in a background thread) for new Hebrew models."""
+    def _check_new_models(self, *, announce: bool = True) -> None:
+        """Query HuggingFace (in a background thread) for new Hebrew models.
+
+        Args:
+            announce: Report "none found" and failures. An automatic check only
+                speaks up when there is actually something new.
+        """
         if self._model_check_thread is not None:
             return  # A check is already running.
 
-        self._btn_check_models.setEnabled(False)
-        self._lbl_status.setText(tr(S.CHECK_MODELS_CHECKING))
-        self._lbl_status.setVisible(True)
+        self._model_announce = announce
+        if announce:
+            self._lbl_status.setText(tr(S.CHECK_MODELS_CHECKING))
+            self._lbl_status.setVisible(True)
 
         thread = QThread(self)
         worker = _ModelCheckWorker()
@@ -781,14 +916,19 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_model_check_finished(self, models: list) -> None:
         """Show the result of a successful new-model check."""
-        self._lbl_status.setVisible(False)
+        if self._model_announce:
+            # A silent check never showed the label, and it may be reporting
+            # an unrelated operation.
+            self._lbl_status.setVisible(False)
+        self._settings.setValue(SETTINGS_MODEL_LAST_CHECKED_KEY, time.time())
+
         if models:
             listing = "\n".join(f"\u2022 {m['created']}  {m['id']}" for m in models)
             QMessageBox.information(
                 self, tr(S.CHECK_MODELS_TITLE),
                 tr(S.CHECK_MODELS_FOUND).format(list=listing),
             )
-        else:
+        elif self._model_announce:
             QMessageBox.information(
                 self, tr(S.CHECK_MODELS_TITLE), tr(S.CHECK_MODELS_NONE),
             )
@@ -796,6 +936,8 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_model_check_failed(self, msg: str) -> None:
         """Show an error if the new-model check could not complete."""
+        if not self._model_announce:
+            return
         self._lbl_status.setVisible(False)
         QMessageBox.warning(
             self, tr(S.CHECK_MODELS_TITLE),
@@ -804,10 +946,228 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_model_check_thread_done(self) -> None:
-        """Re-enable the check button once the background thread has finished."""
+        """Release the thread once it has finished."""
         self._model_check_thread = None
         self._model_check_worker = None
-        self._btn_check_models.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Application updates
+    # ------------------------------------------------------------------
+
+    def _build_updates_menu(self) -> None:
+        """Populate the updates menu once.
+
+        Built once rather than on every open because ``QMenu.clear()`` detaches
+        submenus without destroying them, so rebuilding would leak one QMenu
+        per automatic-check entry every time the button was pressed.
+        """
+        self._act_models_now = self._updates_menu.addAction(
+            tr(S.CHECK_MODELS), lambda: self._check_new_models(announce=True),
+        )
+        self._act_models_now.setToolTip(tr(S.CHECK_MODELS_TOOLTIP))
+        self._add_frequency_submenu(
+            tr(S.MODELS_CHECK_AUTOMATICALLY), SETTINGS_MODEL_FREQUENCY_KEY,
+        )
+
+        self._updates_menu.addSeparator()
+
+        self._act_app_now = self._updates_menu.addAction(
+            tr(S.UPDATE_MENU_CHECK_NOW), self._check_for_updates_manually,
+        )
+        self._add_frequency_submenu(
+            tr(S.UPDATE_MENU_CHECK_AUTOMATICALLY), SETTINGS_UPDATE_FREQUENCY_KEY,
+        )
+
+    @Slot()
+    def _refresh_updates_menu(self) -> None:
+        """Sync the menu with the settings and with any running check.
+
+        Done on open rather than at every point that could change them, so no
+        code path can leave a stale tick behind.
+        """
+        self._act_models_now.setEnabled(self._model_check_thread is None)
+        self._act_app_now.setEnabled(self._update_thread is None)
+
+        for key, actions in self._frequency_actions.items():
+            current = self._check_frequency(key) or NEVER
+            for value, action in actions.items():
+                action.setChecked(value == current)
+
+    def _add_frequency_submenu(self, title: str, key: str) -> None:
+        """Add a mutually exclusive never/day/week/month submenu for *key*."""
+        # Constructed with an explicit parent rather than via addMenu(title):
+        # that overload leaves the submenu owned by its menu-action's Python
+        # wrapper, so the entry stops opening once the wrapper is collected.
+        submenu = QMenu(title, self._updates_menu)
+        self._updates_menu.addMenu(submenu)
+        group = QActionGroup(submenu)
+        group.setExclusive(True)
+        actions: dict[str, QAction] = {}
+
+        for value, label in FREQUENCY_CHOICES:
+            action = submenu.addAction(tr(label))
+            action.setCheckable(True)
+            action.setActionGroup(group)
+            action.triggered.connect(
+                lambda _checked=False, k=key, v=value: self._set_check_frequency(k, v)
+            )
+            actions[value] = action
+
+        self._frequency_actions[key] = actions
+
+    def _check_frequency(self, key: str) -> Optional[str]:
+        """The stored frequency, or None if the user has never been asked."""
+        raw = self._settings.value(key)
+        return str(raw) if raw is not None else None
+
+    def _set_check_frequency(self, key: str, frequency: str) -> None:
+        self._settings.setValue(key, frequency)
+        log.info("Check frequency for %s set to %s.", key, frequency)
+
+    def _is_check_due(self, frequency: Optional[str], last_key: str) -> bool:
+        """Whether a check set to *frequency* is due, given when it last ran."""
+        interval = interval_for(frequency)
+        if interval is None:
+            return False
+        try:
+            last = float(self._settings.value(last_key, 0.0))
+        except (TypeError, ValueError):
+            last = 0.0
+        return is_due(last, time.time(), interval)
+
+    @Slot()
+    def _run_startup_checks(self) -> None:
+        """Run whichever automatic checks are due, application first.
+
+        Sequential on purpose: the application check may open a modal, and two
+        stacked dialogs on launch would be hostile.
+        """
+        self._maybe_check_for_updates()
+        self._maybe_check_for_model_updates()
+
+    def _maybe_check_for_updates(self) -> None:
+        """Ask for consent once, then check if one is due."""
+        frequency = self._check_frequency(SETTINGS_UPDATE_FREQUENCY_KEY)
+        if frequency is None:
+            frequency = self._ask_update_consent()
+        if self._is_check_due(frequency, SETTINGS_UPDATE_LAST_CHECKED_KEY):
+            self._start_update_check(announce=False)
+
+    def _maybe_check_for_model_updates(self) -> None:
+        """Check for new models if due. Never prompts: it defaults to never."""
+        frequency = self._check_frequency(SETTINGS_MODEL_FREQUENCY_KEY)
+        if self._is_check_due(frequency, SETTINGS_MODEL_LAST_CHECKED_KEY):
+            self._check_new_models(announce=False)
+
+    def _ask_update_consent(self) -> str:
+        """Ask once whether to check automatically, and remember the answer.
+
+        Deliberately a yes/no question rather than the four-way frequency
+        choice: a first-run modal is the wrong place to make someone pick an
+        interval, and the menu offers the finer control afterwards.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle(tr(S.UPDATE_TITLE))
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(tr(S.UPDATE_CONSENT_QUESTION))
+        yes = box.addButton(tr(S.UPDATE_CONSENT_YES), QMessageBox.ButtonRole.YesRole)
+        box.addButton(tr(S.UPDATE_CONSENT_NO), QMessageBox.ButtonRole.NoRole)
+        box.exec()
+
+        frequency = DAILY if box.clickedButton() is yes else NEVER
+        self._settings.setValue(SETTINGS_UPDATE_FREQUENCY_KEY, frequency)
+        log.info("Update-check consent answered: %s.", frequency)
+        return frequency
+
+    @Slot()
+    def _check_for_updates_manually(self) -> None:
+        """Check now, reporting the outcome either way because the user asked."""
+        self._start_update_check(announce=True)
+
+    def _start_update_check(self, *, announce: bool) -> None:
+        """Run the check in a background thread.
+
+        Args:
+            announce: Report "up to date" and failures. Automatic checks stay
+                silent so a flaky connection never interrupts the user.
+        """
+        if self._update_thread is not None:
+            return
+        self._update_announce = announce
+        if announce:
+            self._lbl_status.setText(tr(S.UPDATE_CHECKING))
+            self._lbl_status.setVisible(True)
+
+        thread = QThread(self)
+        worker = _UpdateCheckWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_check_finished)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_update_thread_done)
+        # Strong references: without them either object may be collected
+        # before run() executes on the background thread.
+        self._update_thread = thread
+        self._update_worker = worker
+        thread.start()
+
+    @Slot(str)
+    def _on_update_check_finished(self, latest: str) -> None:
+        """Offer the releases page if *latest* is newer, else stay quiet."""
+        if self._update_announce:
+            # Only ours to hide: a silent check never showed anything, and the
+            # label may be reporting an unrelated operation.
+            self._lbl_status.setVisible(False)
+        self._settings.setValue(SETTINGS_UPDATE_LAST_CHECKED_KEY, time.time())
+
+        if not latest:
+            if self._update_announce:
+                QMessageBox.information(
+                    self, tr(S.UPDATE_TITLE),
+                    tr(S.UPDATE_UP_TO_DATE).format(current=__version__),
+                )
+            return
+        # An automatic check must not re-offer a version already declined.
+        if (not self._update_announce
+                and self._settings.value(SETTINGS_UPDATE_LAST_NOTIFIED_KEY) == latest):
+            log.info("Update %s already declined; not asking again.", latest)
+            return
+        self._settings.setValue(SETTINGS_UPDATE_LAST_NOTIFIED_KEY, latest)
+
+        box = QMessageBox(self)
+        box.setWindowTitle(tr(S.UPDATE_TITLE))
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(tr(S.UPDATE_AVAILABLE).format(
+            latest=isolate(latest), current=__version__,
+        ))
+        open_page = box.addButton(
+            tr(S.UPDATE_OPEN_PAGE), QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(tr(S.UPDATE_LATER), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_page:
+            # A constant, never a URL from the response. See update_check.
+            QDesktopServices.openUrl(QUrl(releases_url()))
+
+    @Slot(str)
+    def _on_update_check_failed(self, msg: str) -> None:
+        """Report a failure only when the user explicitly asked for a check."""
+        if not self._update_announce:
+            return
+        self._lbl_status.setVisible(False)
+        QMessageBox.warning(
+            self, tr(S.UPDATE_TITLE), tr(S.UPDATE_FAILED).format(msg=msg),
+        )
+
+    @Slot()
+    def _on_update_thread_done(self) -> None:
+        self._update_thread = None
+        self._update_worker = None
 
     # ------------------------------------------------------------------
     # Google Drive
@@ -855,14 +1215,18 @@ class MainWindow(QMainWindow):
 
     def _refresh_google_chip(self) -> None:
         """Update the account chip's icon, text and tooltip."""
-        from .player_icons import icon_cloud_upload
+        from .player_icons import icon_cloud_upload, icon_google_drive
 
         busy = self._gdrive_thread is not None
         reason = self._drive_unavailable_reason()
         session = None if reason else self._drive()
         linked = bool(session and session.is_linked())
 
-        self._btn_google.setIcon(icon_cloud_upload(linked))
+        # Google's mark only when it is genuinely connected and the button is
+        # live: every other state would dim it, which their guidelines forbid.
+        self._btn_google.setIcon(
+            icon_google_drive() if linked and not busy else icon_cloud_upload()
+        )
         self._btn_google.setText("")
         # Progressive disclosure: keep the control visible but disabled with an
         # explanation, rather than hiding it and leaving the user puzzled.
@@ -872,7 +1236,10 @@ class MainWindow(QMainWindow):
         elif busy:
             self._btn_google.setToolTip(tr(S.GOOGLE_SIGNING_IN))
         elif linked:
+            # The action comes first: a button carrying the Drive mark has to
+            # say what it does with Google Drive.
             self._btn_google.setToolTip(
+                f"{tr(S.GOOGLE_CHIP_ACTION)}\n"
                 f"{tr(S.GOOGLE_CONNECTED_AS)}{isolate(session.email)}"
             )
         else:
@@ -945,26 +1312,85 @@ class MainWindow(QMainWindow):
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(on_finished)
-        worker.failed.connect(on_failed)
+        # The relay, not the window, is what the worker reports to: it can be
+        # retired on its own, which is how a result that arrives after the
+        # watchdog gave up is dropped without disconnecting anything.
+        relay = _GDriveRelay(self, on_finished, on_failed,
+                             self._finish_gdrive, self._on_gdrive_thread_done)
+        worker.finished.connect(relay.on_finished)
+        worker.failed.connect(relay.on_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._on_gdrive_thread_done)
+        thread.finished.connect(relay.on_thread_done)
         # Strong references: without these the objects can be collected before
         # run() executes on the background thread.
         self._gdrive_thread = thread
         self._gdrive_worker = worker
+        self._gdrive_relay = relay
         self._refresh_google_chip()
+        self._gdrive_watchdog.start(GDRIVE_WATCHDOG_MS)
         thread.start()
         return True
 
     @Slot()
-    def _on_gdrive_thread_done(self) -> None:
+    def _cancel_gdrive_worker(self) -> None:
+        """Ask the running Drive operation to stop.
+
+        A GUI-thread slot on purpose. Connecting a GUI signal straight to the
+        worker would make a cross-thread connection, and tearing one down while
+        the worker is being destroyed deadlocks: the GUI thread waits on the
+        worker's Qt lock while holding the GIL, and the worker's destructor
+        waits on the GIL while holding that lock.
+        """
+        cancel = getattr(self._gdrive_worker, "cancel", None)
+        if cancel is not None:
+            cancel()
+
+    def _finish_gdrive(self, callback, payload) -> None:
+        """Hand a Drive result to its handler, on the GUI thread."""
+        self._gdrive_watchdog.stop()
+        callback(payload)
+
+    @Slot()
+    def _on_gdrive_timeout(self) -> None:
+        """Give up on a Drive operation that never reported back."""
+        thread, worker, relay = (
+            self._gdrive_thread, self._gdrive_worker, self._gdrive_relay,
+        )
+        if thread is None:
+            return
+        log.warning(
+            "A Google Drive operation did not report within %.0fs; abandoning it.",
+            GDRIVE_WATCHDOG_MS / 1000,
+        )
+        if relay is not None:
+            relay.retire()
+        self._cancel_gdrive_worker()
+        self._gdrive_abandoned.append((thread, worker, relay))
+        thread.quit()
         self._gdrive_thread = None
         self._gdrive_worker = None
+        self._gdrive_relay = None
+        self._close_gdrive_progress()
+        self._lbl_status.setVisible(False)
+        self._refresh_google_chip()
+        QMessageBox.warning(
+            self, tr(S.GOOGLE_ACCOUNT_TITLE), tr(S.GDRIVE_TIMEOUT),
+        )
+
+    def _on_gdrive_thread_done(self, relay) -> None:
+        self._gdrive_abandoned = [
+            entry for entry in self._gdrive_abandoned if entry[2] is not relay
+        ]
+        if relay is not self._gdrive_relay:
+            return  # An abandoned thread stopping, possibly under a newer one.
+        self._gdrive_watchdog.stop()
+        self._gdrive_thread = None
+        self._gdrive_worker = None
+        self._gdrive_relay = None
         self._refresh_google_chip()
 
     @Slot()
@@ -989,14 +1415,10 @@ class MainWindow(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
-        # DirectConnection is required, not stylistic: the worker thread is
-        # blocked inside run() waiting for the callback, so it never drains its
-        # event loop and a queued cancel would arrive only after the wait it is
-        # meant to interrupt. cancel() just sets a threading.Event, which is
-        # safe to call from the GUI thread.
-        progress.canceled.connect(
-            worker.cancel, Qt.ConnectionType.DirectConnection,
-        )
+        # Routed through the window rather than connected straight to the
+        # worker: see _cancel_gdrive_worker for why a cross-thread connection
+        # here can deadlock Qt's locks against the GIL.
+        progress.canceled.connect(self._cancel_gdrive_worker)
         self._gdrive_progress = progress
 
         self._lbl_status.setText(tr(S.GOOGLE_SIGNING_IN))
@@ -1013,12 +1435,10 @@ class MainWindow(QMainWindow):
         progress, self._gdrive_progress = self._gdrive_progress, None
         if progress is None:
             return
-        # close() rejects the dialog, which emits canceled(). By now the worker
-        # has finished and may already be queued for deletion, so detach first.
-        try:
-            progress.canceled.disconnect()
-        except (RuntimeError, TypeError):
-            pass
+        # close() rejects the dialog, which emits canceled(). Silenced rather
+        # than disconnected: blockSignals touches only this object, while
+        # disconnect() has to lock whatever is on the other end.
+        progress.blockSignals(True)
         progress.close()
         progress.deleteLater()
 

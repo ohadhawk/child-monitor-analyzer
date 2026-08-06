@@ -109,8 +109,10 @@ class InvalidGrant(AuthError):
 class MissingScope(AuthError):
     """Sign-in succeeded but Drive access was not granted.
 
-    Almost always a console misconfiguration rather than a user action: the
-    scope has to be registered on the consent screen, not merely requested.
+    Google's granular consent screen lists each requested permission as its own
+    checkbox, unticked by default, and "Continue" stays enabled whether or not
+    the user ticks it. Skipping the Drive box therefore yields a perfectly
+    valid token that simply cannot reach Drive.
     """
 
 
@@ -511,18 +513,22 @@ DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 def _check_granted_scopes(payload: dict) -> None:
     """Reject a token that cannot actually reach Drive.
 
-    Google returns 200 with a reduced scope set when the consent screen has no
-    Drive scope registered; without this the failure would only appear as a
-    403 on the first upload, far from its cause.
+    Google returns 200 with a reduced scope set when the user leaves the Drive
+    checkbox unticked on the granular consent screen; without this the failure
+    would only appear as a 403 on the first upload, far from its cause.
     """
     granted = payload.get("scope")
     if not isinstance(granted, str) or not granted:
         return  # Nothing to check against; the upload will report any problem.
     if DRIVE_SCOPE not in granted.split():
+        # Scope names carry no user data, and knowing what *was* granted is the
+        # difference between a five-minute and a five-hour diagnosis.
+        log.warning("Google granted only these scopes: %s", granted)
         raise MissingScope(
-            "Google did not grant Drive access. Add the "
-            f"'{DRIVE_SCOPE}' scope on the OAuth consent screen "
-            "(APIs & Services -> Data access), then sign in again."
+            "Google did not grant Drive access. On the Google consent screen, "
+            "tick the box for 'See, edit, create and delete only the specific "
+            "Google Drive files that you use with this app' before pressing "
+            "Continue - it is not ticked for you."
         )
 
 

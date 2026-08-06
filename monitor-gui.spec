@@ -60,6 +60,12 @@ a = Analysis(
                 / "LICENSE-third-party.txt"),
             "monitor/vendor/panns",
         ),
+        # The Google Drive mark and its trademark notice, which must travel
+        # with it.
+        (
+            str(PROJECT_ROOT / "src" / "monitor" / "gui" / "assets"),
+            "monitor/gui/assets",
+        ),
     ] + _docx_datas + _fw_datas,
     hiddenimports=[
         # --- monitor subpackages ---
@@ -75,6 +81,7 @@ a = Analysis(
         "monitor.priority",
         "monitor.analysis_worker",
         "monitor.model_updates",
+        "monitor.update_check",
         "monitor.gui",
         "monitor.gui.main_window",
         "monitor.gui.report_table",
@@ -113,6 +120,7 @@ a = Analysis(
         "PySide6.QtGui",
         "PySide6.QtWidgets",
         "PySide6.QtMultimedia",
+        "PySide6.QtSvg",
         # --- ML / audio ---
         "faster_whisper",
         "ctranslate2",

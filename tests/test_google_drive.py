@@ -10,6 +10,7 @@ retry bounds, untrusted-response handling and credential-store fail-safety.
 from __future__ import annotations
 
 import ast
+import gc
 import base64
 import hashlib
 import json
@@ -384,6 +385,70 @@ def test_revoke_reports_failure_so_the_user_can_be_warned(monkeypatch):
 
 
 # ===========================
+# GRANULAR CONSENT
+# ===========================
+
+def test_a_partial_grant_is_caught_at_sign_in():
+    """Google returns 200 with a reduced scope set when the Drive box is left
+    unticked, and the failure would otherwise surface as a 403 much later."""
+    with pytest.raises(auth.MissingScope):
+        auth._check_granted_scopes({"scope": "openid email"})
+
+
+def test_a_full_grant_passes():
+    auth._check_granted_scopes({"scope": f"openid email {auth.DRIVE_SCOPE}"})
+
+
+@pytest.mark.parametrize("payload", [{}, {"scope": ""}, {"scope": None}])
+def test_an_unstated_scope_set_is_not_second_guessed(payload):
+    """Nothing to check against; the first upload will report any problem."""
+    auth._check_granted_scopes(payload)
+
+
+def test_a_scope_that_merely_starts_the_same_is_not_accepted():
+    auth._check_granted_scopes({"scope": auth.DRIVE_SCOPE})
+    with pytest.raises(auth.MissingScope):
+        auth._check_granted_scopes({"scope": auth.DRIVE_SCOPE + ".readonly"})
+
+
+def test_the_partial_grant_is_logged_with_what_was_granted(caplog):
+    """The scope list is the whole diagnosis, and carries no user data."""
+    with caplog.at_level(logging.WARNING, logger="monitor.gdrive.auth"):
+        with pytest.raises(auth.MissingScope):
+            auth._check_granted_scopes({"scope": "openid email"})
+    assert "openid email" in caplog.text
+
+
+def test_the_partial_grant_blames_the_checkbox_not_the_console():
+    """The console is configured -- the user simply did not tick the box.
+
+    Sending them to Cloud Console instead wastes their time on a setting that
+    is already correct.
+    """
+    with pytest.raises(auth.MissingScope) as excinfo:
+        auth._check_granted_scopes({"scope": "openid email"})
+    message = str(excinfo.value)
+    assert "tick" in message.lower()
+    assert "consent screen" in message.lower()
+    assert "APIs & Services" not in message
+
+
+def test_the_user_is_warned_about_the_checkbox_before_the_browser_opens():
+    """Prevention: the hint shown next to the sign-in button must mention it."""
+    from monitor.gui.strings import Lang, S, _STRINGS
+
+    assert "תיבת הסימון" in _STRINGS[(S.GOOGLE_BROWSER_HINT, Lang.HE)]
+    assert "checkbox" in _STRINGS[(S.GOOGLE_BROWSER_HINT, Lang.EN)]
+
+
+def test_the_failure_message_tells_the_user_to_tick_the_box():
+    from monitor.gui.strings import Lang, S, _STRINGS
+
+    assert "לסמן" in _STRINGS[(S.GOOGLE_MISSING_SCOPE, Lang.HE)]
+    assert "Tick it" in _STRINGS[(S.GOOGLE_MISSING_SCOPE, Lang.EN)]
+
+
+# ===========================
 # DRIVE CLIENT
 # ===========================
 
@@ -709,6 +774,75 @@ def test_the_setup_script_can_still_find_the_secret_constant():
 # GUI PLUMBING
 # ===========================
 
+@pytest.fixture
+def window(monkeypatch):
+    """A MainWindow on a throwaway QSettings scope.
+
+    Without the override this would read and write the developer's real
+    preferences.
+    """
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from monitor.gui import main_window as mw
+
+    monkeypatch.setattr(mw, "SETTINGS_ORG", "ChildMonitorAnalyzerTests")
+    monkeypatch.setattr(mw, "SETTINGS_APP", f"gdrive-{id(monkeypatch)}")
+    # The startup prompts are modal; nothing may schedule one during a test.
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda *a, **k: None)
+
+    app = QApplication.instance() or QApplication([])
+    # Retire the previous window's C++ objects before allocating new ones:
+    # PySide6 otherwise hands back an invalidated wrapper for a reused address.
+    gc.collect()
+    app.processEvents()
+    win = mw.MainWindow()
+    try:
+        yield win
+    finally:
+        win.close()
+        app.processEvents()
+
+
+def _spin(app, predicate, limit: float = 10.0) -> bool:
+    """Drain the event loop until *predicate* holds, or *limit* elapses.
+
+    Bounded on purpose: the suite has no timeout plugin, so a test that waits
+    on a condition that never comes would wedge the whole run.
+    """
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return predicate()
+
+
+def _stalled_worker():
+    """A Drive worker that reports back only once it is cancelled."""
+    from PySide6.QtCore import QObject, Signal, Slot
+
+    class _Stalled(QObject):
+        finished = Signal(object)
+        failed = Signal(str)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = threading.Event()
+
+        def cancel(self) -> None:
+            self.cancelled.set()
+
+        @Slot()
+        def run(self) -> None:
+            self.cancelled.wait(30.0)
+            self.finished.emit(None)
+
+    return _Stalled()
+
+
 def test_the_worker_cancel_reaches_the_auth_layer(tmp_path, monkeypatch):
     """cancel() must interrupt a run() that is already blocked."""
     from PySide6.QtCore import Qt
@@ -741,17 +875,32 @@ def test_the_worker_cancel_reaches_the_auth_layer(tmp_path, monkeypatch):
     assert messages == [""]
 
 
-def test_the_cancel_button_is_wired_directly():
-    """A queued cancel would arrive only after the wait it must interrupt.
-
-    The worker thread blocks inside ``run()`` and never drains its event loop,
-    so an auto/queued connection makes the Cancel button do nothing.
-    """
-    source = (
+def _main_window_source() -> str:
+    return (
         Path(__file__).resolve().parents[1]
         / "src" / "monitor" / "gui" / "main_window.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
+
+
+def _function_source(name: str) -> str:
+    tree = ast.parse(_main_window_source())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.unparse(node)
+    raise AssertionError(f"{name}() is gone from main_window.py")
+
+
+def test_the_cancel_button_never_reaches_across_threads():
+    """Cancel must not be wired straight to the worker.
+
+    The worker lives on the background thread, so such a connection crosses
+    threads, and tearing one down needs both objects' Qt locks. The worker's
+    destructor holds its own lock while waiting for the GIL, which the GUI
+    thread is holding while it waits for that lock -- a permanent deadlock,
+    observed in the field. Routing through a window slot keeps sender and
+    receiver on the GUI thread; the actual cancel is a plain call from there.
+    """
+    tree = ast.parse(_main_window_source())
 
     connects = [
         node for node in ast.walk(tree)
@@ -763,10 +912,163 @@ def test_the_cancel_button_is_wired_directly():
     ]
     assert connects, "the sign-in dialog no longer connects a cancel handler"
     for call in connects:
-        assert "DirectConnection" in ast.unparse(call), (
-            f"canceled.connect() at line {call.lineno} is not a DirectConnection, "
-            "so pressing Cancel during sign-in would do nothing."
+        target = ast.unparse(call.args[0]) if call.args else ""
+        assert target == "self._cancel_gdrive_worker", (
+            f"canceled.connect() at line {call.lineno} targets {target!r}; it must "
+            "go to a GUI-thread slot on the window, never to the worker."
         )
+
+
+def test_the_progress_dialog_is_silenced_rather_than_disconnected():
+    """disconnect() has to lock the far end; blockSignals touches only itself.
+
+    This is the exact line the GUI thread deadlocked on.
+    """
+    source = _function_source("_close_gdrive_progress")
+    assert "disconnect" not in source, (
+        "_close_gdrive_progress disconnects again; that is the deadlock."
+    )
+    assert "blockSignals(True)" in source, (
+        "nothing stops close() from emitting canceled()."
+    )
+
+
+def test_the_cancel_slot_reaches_the_running_worker(window):
+    """The indirection must not have quietly broken the Cancel button."""
+    worker = _stalled_worker()
+    window._gdrive_worker = worker
+    window._cancel_gdrive_worker()
+    assert worker.cancelled.is_set()
+
+
+def test_cancelling_without_a_worker_is_harmless(window):
+    window._gdrive_worker = None
+    window._cancel_gdrive_worker()  # must not raise
+
+
+def test_a_stalled_operation_is_abandoned_and_the_ui_freed(window, monkeypatch):
+    """A worker that never reports must not leave the UI waiting forever."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from monitor.gui import main_window as mw
+
+    warned: list = []
+    monkeypatch.setattr(mw, "GDRIVE_WATCHDOG_MS", 50)
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warned.append(a[-1]),
+    )
+
+    results: list = []
+    worker = _stalled_worker()
+    assert window._start_gdrive_worker(worker, results.append, results.append)
+
+    _spin(QApplication.instance(), lambda: window._gdrive_thread is None)
+
+    assert window._gdrive_thread is None, "the watchdog never released the UI"
+    assert worker.cancelled.is_set(), "the abandoned worker was not told to stop"
+    # The slot is free again, so the user can simply try once more.
+    assert window._start_gdrive_worker(_stalled_worker(), results.append,
+                                       results.append)
+    window._on_gdrive_timeout()
+    assert warned, "the user was never told the operation was given up on"
+
+
+def test_the_worker_reports_to_a_gui_thread_object():
+    """A plain function connected to a worker signal runs on the worker thread.
+
+    The handlers open dialogs and touch widgets, so they must be reached
+    through a QObject that lives on the GUI thread and lets Qt queue the
+    emission across the boundary.
+    """
+    source = _function_source("_start_gdrive_worker")
+    for signal in ("finished", "failed"):
+        assert f"worker.{signal}.connect(relay.on_{signal})" in source, (
+            f"worker.{signal} no longer reports through the GUI-thread relay."
+        )
+    assert "lambda" not in source, (
+        "a lambda connected to a worker signal would run on the worker thread."
+    )
+
+
+def test_a_result_that_arrives_after_the_watchdog_is_dropped(window, monkeypatch):
+    """A late success must not reopen dialogs the user has moved on from."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from monitor.gui import main_window as mw
+
+    monkeypatch.setattr(mw, "GDRIVE_WATCHDOG_MS", 50)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    results: list = []
+    worker = _stalled_worker()
+    assert window._start_gdrive_worker(worker, results.append, results.append)
+
+    app = QApplication.instance()
+    _spin(app, lambda: window._gdrive_thread is None)
+    assert worker.cancelled.is_set()
+
+    # cancel() lets the worker fall through to emit finished(); it is too late.
+    _spin(app, lambda: bool(results), limit=2.0)
+    assert results == [], f"a superseded result was acted on: {results!r}"
+
+
+def test_a_normal_result_stops_the_watchdog(window, monkeypatch):
+    """The timer must not fire over an operation that already succeeded."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from monitor.gui import main_window as mw
+
+    timed_out: list = []
+    monkeypatch.setattr(mw, "GDRIVE_WATCHDOG_MS", 400)
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: timed_out.append(a))
+
+    results: list = []
+    worker = _stalled_worker()
+    worker.cancel()  # run() returns at once and emits finished
+    assert window._start_gdrive_worker(worker, results.append, results.append)
+
+    app = QApplication.instance()
+    _spin(app, lambda: bool(results))
+    assert results, "the successful result never reached the handler"
+    assert not window._gdrive_watchdog.isActive(), "the watchdog is still armed"
+
+    _spin(app, lambda: bool(timed_out), limit=1.0)
+    assert timed_out == [], "the watchdog fired over a completed operation"
+
+
+def test_an_abandoned_thread_does_not_clear_a_newer_one(window, monkeypatch):
+    """Two operations in flight must not have their bookkeeping crossed."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from monitor.gui import main_window as mw
+
+    monkeypatch.setattr(mw, "GDRIVE_WATCHDOG_MS", 50)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    app = QApplication.instance()
+    stalled = _stalled_worker()
+    assert window._start_gdrive_worker(stalled, lambda _r: None, lambda _r: None)
+    _spin(app, lambda: window._gdrive_thread is None)
+
+    second = _stalled_worker()
+    assert window._start_gdrive_worker(second, lambda _r: None, lambda _r: None)
+    live = window._gdrive_thread
+    # Let the abandoned thread finish underneath the new one.
+    _spin(app, lambda: not window._gdrive_abandoned)
+    assert window._gdrive_thread is live, (
+        "an abandoned thread cleared the running operation's bookkeeping"
+    )
+    second.cancel()
+    _spin(app, lambda: window._gdrive_thread is None)
+
+
+def test_shutdown_cancels_before_waiting():
+    """quit() alone cannot interrupt the OAuth wait, so the wait would expire."""
+    source = _function_source("closeEvent")
+    assert "_cancel_gdrive_worker()" in source, (
+        "closeEvent waits on the Drive thread without asking it to stop first."
+    )
 
 
 def test_link_fails_closed_without_a_keystore(tmp_path, monkeypatch):
@@ -1154,6 +1456,217 @@ def test_a_dead_grant_invalidates_the_linked_cache(tmp_path, monkeypatch):
     with pytest.raises(auth.InvalidGrant):
         session._access_token()
     assert session.is_linked() is False
+
+
+# ===========================
+# CHIP INDICATOR
+# ===========================
+
+def _image(icon, size=64):
+    from PySide6.QtCore import QSize
+
+    return icon.pixmap(QSize(size, size)).toImage()
+
+
+def _cloud_pixels(size=64):
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from monitor.gui.player_icons import icon_cloud_upload
+
+    QApplication.instance() or QApplication([])
+    return _image(icon_cloud_upload(), size)
+
+
+def _drive_icon():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from monitor.gui.player_icons import icon_google_drive
+
+    QApplication.instance() or QApplication([])
+    return icon_google_drive()
+
+
+def test_the_cloud_lobes_do_not_cancel_each_other_out():
+    """The lobes overlap, so an odd-even fill would punch holes in the cloud.
+
+    Samples inside the left lobe's overlap with the top one, on the 32-unit
+    design grid scaled to 64 px, and clear of the punched-out arrow.
+    """
+    image = _cloud_pixels()
+    assert image.pixelColor(20, 28).alpha() == 255   # (10, 14) on the grid
+    assert image.pixelColor(44, 28).alpha() == 255   # (22, 14), right lobe
+
+
+def test_the_arrow_is_punched_through():
+    """Grid (16, 20): the middle of the arrow shaft."""
+    assert _cloud_pixels().pixelColor(32, 40).alpha() == 0
+
+
+def test_the_glyph_fills_its_canvas():
+    """The chip carries no text, so the cloud gets the whole button."""
+    image = _cloud_pixels()
+    opaque = [(x, y) for y in range(64) for x in range(64)
+              if image.pixelColor(x, y).alpha() > 0]
+    xs = [x for x, _ in opaque]
+    ys = [y for _, y in opaque]
+    assert min(xs) <= 1 and max(xs) >= 62, "the cloud must span the full width"
+    assert max(ys) - min(ys) >= 44, "and most of the height"
+
+
+def test_the_signed_out_glyph_is_not_a_google_mark():
+    """The signed-out state is muted, which the guidelines forbid for a mark.
+
+    So the glyph used there has to stay generic, drawn by us.
+    """
+    from monitor.gui import player_icons
+
+    source = Path(player_icons.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    body = next(
+        ast.get_source_segment(source, node)
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_draw_cloud_upload"
+    )
+    assert "drawText" not in body, "no lettering, and certainly no 'G'"
+    assert "google_drive" not in body, "and no trace of the real mark"
+
+
+# ===========================
+# THE GOOGLE DRIVE MARK
+# ===========================
+
+#: The asset as published. A mismatch means it was edited or swapped, either of
+#: which would breach the "reproduce verbatim" condition recorded in NOTICE.txt.
+DRIVE_SVG_SHA256 = (
+    "60a6496d705d8bf010ce126469be89889db331622b14d8ae1645a38c2aaa23f5"
+)
+
+
+def _drive_svg_path():
+    from monitor.gui import player_icons
+
+    return Path(player_icons.__file__).resolve().parent / "assets" / "google_drive.svg"
+
+
+def test_the_shipped_mark_is_byte_for_byte_as_published():
+    raw = _drive_svg_path().read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == DRIVE_SVG_SHA256
+
+
+def test_the_mark_travels_with_its_trademark_notice():
+    notice = _drive_svg_path().with_name("NOTICE.txt").read_text(encoding="utf-8")
+    assert "trademark of Google Inc" in notice, "Google prescribe this wording"
+    assert "not affiliated" in notice
+    assert DRIVE_SVG_SHA256 in notice.lower(), "the notice must pin the same file"
+
+
+def test_the_readme_attributes_the_trademark():
+    """The guidelines ask for attribution in the app's title or description."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8")
+    assert "Google Drive is a trademark of Google Inc" in readme
+
+
+def test_every_mention_of_drive_uses_its_full_name():
+    """"Don't abbreviate the term 'Google Drive'", say the guidelines.
+
+    Catches a bare "Drive", and the Hebrew transliteration "דרייב", standing in
+    for the product. "Google account" is left alone: that is Google's own term.
+    Reads the table rather than the source, so strings split over several lines
+    are checked too.
+    """
+    from monitor.gui.strings import _STRINGS
+
+    for (key, lang), text in _STRINGS.items():
+        where = f"{key} ({lang})"
+        assert not re.search(r"(?<!Google )Drive", text), (
+            f"abbreviated product name in {where}: {text!r}"
+        )
+        assert "דרייב" not in text, (
+            f"transliterated product name in {where}: {text!r}"
+        )
+
+
+def test_the_mark_is_self_contained():
+    """A logo that fetched a remote resource would phone home on every repaint."""
+    markup = _drive_svg_path().read_text(encoding="utf-8")
+    assert "http://" not in markup.replace("http://www.w3.org/2000/svg", "")
+    assert "https://" not in markup
+    assert "<script" not in markup and "<image" not in markup
+
+
+def test_the_mark_renders_at_full_strength():
+    """Qt masks by luminance, so the file's dark mask fill dims the whole logo.
+
+    Without the workaround every pixel comes back at roughly a third alpha,
+    which is a washed-out mark: an alteration, and an ugly one.
+    """
+    image = _image(_drive_icon())
+    for x, y in ((32, 18), (22, 44), (44, 44)):   # green, blue and yellow lobes
+        assert image.pixelColor(x, y).alpha() == 255
+
+
+def test_the_mark_keeps_its_colours():
+    image = _image(_drive_icon())
+    green = image.pixelColor(32, 18)
+    blue = image.pixelColor(22, 44)
+    yellow = image.pixelColor(44, 44)
+    assert green.green() > green.red() and green.green() > green.blue()
+    assert blue.blue() > blue.red() and blue.blue() > blue.green()
+    assert yellow.red() > 200 and yellow.green() > 150 and yellow.blue() < 80
+
+
+def test_qt_can_never_grey_the_mark():
+    """Qt synthesises a washed-out pixmap for disabled buttons otherwise."""
+    from PySide6.QtGui import QIcon
+    from PySide6.QtCore import QSize
+
+    icon = _drive_icon()
+    normal = icon.pixmap(QSize(64, 64), QIcon.Mode.Normal).toImage()
+    disabled = icon.pixmap(QSize(64, 64), QIcon.Mode.Disabled).toImage()
+    assert disabled == normal
+
+
+def test_the_mark_is_shown_only_while_an_account_is_connected():
+    """Linked uses the mark; every other state uses the neutral cloud.
+
+    Reads the source rather than building a window, because the states depend
+    on a keyring, a session and a running worker thread.
+    """
+    from monitor.gui import main_window
+
+    source = Path(main_window.__file__).read_text(encoding="utf-8")
+    body = source.split("def _refresh_google_chip")[1].split("\n    def ")[0]
+    assert "icon_google_drive() if linked and not busy else icon_cloud_upload()" in body
+
+
+def test_the_button_carrying_the_mark_names_its_action():
+    """The guidelines require a tooltip saying what the button does with Drive."""
+    from monitor.gui import main_window
+    from monitor.gui.strings import Lang, S, _STRINGS
+
+    source = Path(main_window.__file__).read_text(encoding="utf-8")
+    body = source.split("def _refresh_google_chip")[1].split("\n    def ")[0]
+    linked_branch = body.split("elif linked:")[1]
+    assert "S.GOOGLE_CHIP_ACTION" in linked_branch
+    for lang in Lang:
+        assert "Google Drive" in _STRINGS[(S.GOOGLE_CHIP_ACTION, lang)]
+
+
+def test_the_frozen_build_ships_the_mark_and_the_notice():
+    spec = (Path(__file__).resolve().parents[1] / "monitor-gui.spec").read_text(
+        encoding="utf-8")
+    assert '"monitor/gui/assets"' in spec, "the asset folder must be bundled"
+    assert '"PySide6.QtSvg"' in spec, "and the renderer that reads it"
+
+
+def test_an_installed_wheel_ships_the_mark_and_the_notice():
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8")
+    assert 'assets/*.svg' in pyproject
+    assert 'assets/NOTICE.txt' in pyproject
 
 
 # ===========================

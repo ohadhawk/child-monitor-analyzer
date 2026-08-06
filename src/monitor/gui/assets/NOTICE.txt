@@ -1,0 +1,44 @@
+google_drive.svg
+================
+
+Google Drive is a trademark of Google Inc. Use of this trademark is subject to
+Google Permissions. This application is not affiliated with, endorsed by, or
+sponsored by Google.
+
+Terms of use
+------------
+Per https://developers.google.com/workspace/drive/api/guides/branding, no
+pre-approval is needed to use the Google Drive logo to show that an app
+integrates with Drive. The conditions that bind us:
+
+  * "You can resize the logo, but don't make any other changes to the logo."
+  * "Other than the tool tip, don't alter the Google Drive logo in any way."
+  * A button carrying the icon needs a tooltip naming the action it performs.
+  * "Don't abbreviate the term 'Google Drive.'"
+
+Google publishes no greyed-out or monochrome variant, and dimming the colour
+one would be exactly the alteration the guidelines forbid. So the mark appears
+only while an account is connected; the signed-out, unavailable and signing-in
+states use a neutral cloud glyph drawn by this project instead.
+
+Provenance
+----------
+The guidelines link to a 64 dp PNG:
+  https://www.gstatic.com/images/branding/productlogos/drive_2026/v2/web-64dp/logo_drive_2026_color_2x_web_64dp.png
+
+This file is the vector form of the same artwork, from the same versioned
+directory on Google's CDN, taken because the icon is drawn at six sizes:
+  https://www.gstatic.com/images/branding/productlogos/drive_2026/v2/web/192px.svg
+
+Retrieved 2026-08-05
+SHA-256  60a6496d705d8bf010ce126469be89889db331622b14d8ae1645a38c2aaa23f5
+Size     1293 bytes
+
+Rendering
+---------
+The file on disk is byte-for-byte as published. One substitution is applied in
+memory at render time, in monitor.gui.player_icons._qt_maskable: the SVG uses
+an alpha mask, but Qt implements masks as luminance masks only, so the file's
+dark mask fill would dim the whole logo to roughly a third of its opacity.
+Substituting white for that fill yields the alpha the file asks for, so the
+drawn result is the mark exactly as published.

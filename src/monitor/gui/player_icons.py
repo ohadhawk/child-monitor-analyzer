@@ -12,7 +12,11 @@ Usage:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+import logging
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -22,6 +26,9 @@ from PySide6.QtGui import (
     QPixmap,
     QPolygonF,
 )
+from PySide6.QtSvg import QSvgRenderer
+
+log = logging.getLogger(__name__)
 
 _SIZE = 32  # px – icon canvas size
 _COLOR = QColor(50, 50, 50)
@@ -122,55 +129,117 @@ def icon_volume() -> QIcon:
     return _finish(pm, p)
 
 
-# ── Cloud upload: neutral cloud with an up arrow ───────────────
+# ── Cloud upload: neutral stand-in for the signed-out state ────
 #
-# Deliberately NOT a Google "G" or the Drive triangle: Google's branding
-# guidelines forbid altering or recolouring their marks, and a greyed-out
-# logo is exactly such an alteration. A neutral glyph carries the same
-# meaning with no trademark exposure. The word "Google" appears only as
-# plain text elsewhere in the UI (nominative use).
+# Google's guidelines forbid altering or recolouring their marks, and a
+# greyed-out logo is exactly such an alteration. So the Drive mark below is
+# used only while an account is connected, and this neutral glyph carries the
+# meaning everywhere else. The word "Google" appears as plain text in the UI
+# (nominative use).
 _INACTIVE_COLOR = QColor(150, 150, 150)
-_ACTIVE_COLOR = QColor(26, 115, 232)
 
 
-def icon_cloud_upload(active: bool = False) -> QIcon:
-    """Return the Drive account indicator glyph.
+def icon_cloud_upload() -> QIcon:
+    """Return the neutral cloud used whenever no account is connected."""
+    icon = QIcon()
+    # Several sizes because a QIcon will not scale a pixmap up, and the chip
+    # asks for one larger than the 32-unit design grid.
+    for size in (16, 24, 32, 48, 64, 128):
+        icon.addPixmap(_draw_cloud_upload(_INACTIVE_COLOR, size))
+    return icon
 
-    Args:
-        active: True when an account is linked (full colour); False draws the
-            muted, signed-out state.
-    """
-    colour = _ACTIVE_COLOR if active else _INACTIVE_COLOR
-    pm = QPixmap(_SIZE, _SIZE)
+
+def _draw_cloud_upload(colour: QColor, size: int) -> QPixmap:
+    """Render the cloud-upload glyph at *size* px from the 32-unit grid."""
+    pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(size / _SIZE, size / _SIZE)
 
-    # Cloud outline: three overlapping circles on a flat base.
+    # Drawn edge to edge, unlike the player glyphs: this one sits alone on a
+    # chip rather than in a row, so the surrounding button supplies the margin.
     cloud = QPainterPath()
-    cloud.addEllipse(QRectF(6.0, 12.0, 11.0, 11.0))
-    cloud.addEllipse(QRectF(12.0, 8.0, 13.0, 13.0))
-    cloud.addEllipse(QRectF(18.0, 13.0, 9.0, 9.0))
-    cloud.addRect(QRectF(9.0, 17.0, 15.0, 6.0))
+    # Winding, not the default odd-even: the lobes overlap, and odd-even would
+    # punch the overlaps back out.
+    cloud.setFillRule(Qt.FillRule.WindingFill)
+    cloud.addEllipse(QRectF(0.0, 9.0, 16.0, 16.0))
+    cloud.addEllipse(QRectF(5.0, 2.0, 22.0, 22.0))
+    cloud.addEllipse(QRectF(16.0, 9.0, 16.0, 16.0))
+    cloud.addRect(QRectF(8.0, 17.0, 16.0, 8.0))
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(colour)
     p.drawPath(cloud.simplified())
 
-    # Up arrow punched through the cloud in the background colour.
+    # Up arrow punched out of the cloud, kept clear of its edges so the
+    # silhouette stays a cloud rather than breaking into fragments.
+    arrow = QPolygonF([
+        QPointF(16.0, 9.0),
+        QPointF(21.5, 15.0),
+        QPointF(18.5, 15.0),
+        QPointF(18.5, 22.0),
+        QPointF(13.5, 22.0),
+        QPointF(13.5, 15.0),
+        QPointF(10.5, 15.0),
+    ])
     p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
     p.setBrush(Qt.GlobalColor.transparent)
-    arrow = QPolygonF([
-        QPointF(16.0, 10.0),
-        QPointF(21.0, 16.0),
-        QPointF(18.0, 16.0),
-        QPointF(18.0, 22.0),
-        QPointF(14.0, 22.0),
-        QPointF(14.0, 16.0),
-        QPointF(11.0, 16.0),
-    ])
     p.drawPolygon(arrow)
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-    return _finish(pm, p)
+
+    p.end()
+    return pm
+
+
+# ── Google Drive: the official mark, used only for the linked state ────
+#
+# Shipped verbatim (see assets/NOTICE.txt for provenance) and never
+# recoloured, greyed or overlaid: Google's brand guidelines forbid altering
+# their marks, which is why the signed-out state uses the neutral cloud
+# above instead of a muted Drive logo.
+_ASSETS_DIR = (
+    Path(sys._MEIPASS) / "monitor" / "gui" / "assets"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+    else Path(__file__).resolve().parent / "assets"
+)
+GOOGLE_DRIVE_SVG = _ASSETS_DIR / "google_drive.svg"
+
+
+def icon_google_drive() -> QIcon:
+    """Return the Google Drive mark, or an empty icon if it cannot be read."""
+    try:
+        markup = GOOGLE_DRIVE_SVG.read_bytes()
+    except OSError:
+        log.warning("The Google Drive mark is missing from %s.", _ASSETS_DIR)
+        return QIcon()
+
+    renderer = QSvgRenderer(QByteArray(_qt_maskable(markup)))
+    if not renderer.isValid():
+        log.warning("The Google Drive mark could not be parsed.")
+        return QIcon()
+
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128):
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(p)
+        p.end()
+        icon.addPixmap(pm)
+        # Registered for Disabled too, so Qt cannot synthesise a greyed mark.
+        icon.addPixmap(pm, QIcon.Mode.Disabled)
+    return icon
+
+
+def _qt_maskable(markup: bytes) -> bytes:
+    """Make the artwork's alpha mask survive Qt's luminance-only masking.
+
+    Qt treats every SVG mask as a luminance mask, so the file's dark mask fill
+    dims the whole logo to about a third of its opacity. Substituting white
+    restores the alpha the file asks for; the drawn result is the mark exactly
+    as published, so nothing about its appearance is altered.
+    """
+    return markup.replace(b'fill="#b43333"', b'fill="#ffffff"')
 
 
 def icon_upload_arrow() -> QIcon:

@@ -1,6 +1,6 @@
 # Feature Plan — Google Drive / Google Docs transcript upload
 
-Status: **Draft for approval** · Target version: 1.2.0 · Author: design pass, 2026-08-03
+Status: **Implemented** · Shipped in: 1.2.1 · Author: design pass, 2026-08-03
 
 ---
 

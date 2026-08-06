@@ -95,6 +95,9 @@ class S:
     GOOGLE_SIGN_OUT = "google_sign_out"
     GOOGLE_CONNECTED_AS = "google_connected_as"
     GOOGLE_NOT_CONNECTED = "google_not_connected"
+    #: Required by Google's branding guidelines: a button carrying the Drive
+    #: mark must have a tooltip naming the action it performs.
+    GOOGLE_CHIP_ACTION = "google_chip_action"
     GOOGLE_SCOPE_EXPLANATION = "google_scope_explanation"
     GOOGLE_BROWSER_HINT = "google_browser_hint"
     GOOGLE_AUTH_FAILED = "google_auth_failed"
@@ -105,6 +108,8 @@ class S:
     GOOGLE_SIGNING_IN = "google_signing_in"
     GOOGLE_AUTH_DENIED = "google_auth_denied"
     GOOGLE_MISSING_SCOPE = "google_missing_scope"
+    #: Shown when a Drive operation never reports back at all.
+    GDRIVE_TIMEOUT = "gdrive_timeout"
     GOOGLE_MENU_ACCOUNT = "google_menu_account"
     GOOGLE_MENU_UPLOAD_CURRENT = "google_menu_upload_current"
     GOOGLE_MENU_OPEN_FOLDER = "google_menu_open_folder"
@@ -179,6 +184,28 @@ class S:
     CHECK_MODELS_NONE = "check_models_none"
     CHECK_MODELS_FOUND = "check_models_found"
     CHECK_MODELS_FAILED = "check_models_failed"
+
+    # --- Application updates ---
+    UPDATES_BUTTON = "updates_button"
+    UPDATES_TOOLTIP = "updates_tooltip"
+    MODELS_CHECK_AUTOMATICALLY = "models_check_automatically"
+    UPDATE_MENU_CHECK_NOW = "update_menu_check_now"
+    UPDATE_MENU_CHECK_AUTOMATICALLY = "update_menu_check_automatically"
+    FREQ_NEVER = "freq_never"
+    FREQ_DAILY = "freq_daily"
+    FREQ_WEEKLY = "freq_weekly"
+    FREQ_MONTHLY = "freq_monthly"
+    UPDATE_TITLE = "update_title"
+    UPDATE_CONSENT_QUESTION = "update_consent_question"
+    UPDATE_CONSENT_YES = "update_consent_yes"
+    UPDATE_CONSENT_NO = "update_consent_no"
+    UPDATE_AVAILABLE = "update_available"
+    UPDATE_OPEN_PAGE = "update_open_page"
+    UPDATE_LATER = "update_later"
+    UPDATE_UP_TO_DATE = "update_up_to_date"
+    UPDATE_CHECKING = "update_checking"
+    UPDATE_FAILED = "update_failed"
+    UPDATE_RATE_LIMITED = "update_rate_limited"
 
 
 # fmt: off
@@ -300,17 +327,24 @@ _STRINGS = {
     (S.GOOGLE_CONNECTED_AS, Lang.EN): "Signed in as ",
     (S.GOOGLE_NOT_CONNECTED, Lang.HE): "לא מחובר ל‑Google Drive",
     (S.GOOGLE_NOT_CONNECTED, Lang.EN): "Not connected to Google Drive",
+    (S.GOOGLE_CHIP_ACTION, Lang.HE): "העלאת תמלילים ל‑Google Drive",
+    (S.GOOGLE_CHIP_ACTION, Lang.EN): "Upload transcripts to Google Drive",
     (S.GOOGLE_SCOPE_EXPLANATION, Lang.HE):
         "האפליקציה תוכל ליצור ולערוך רק קבצים שהיא עצמה יצרה. "
-        "אין לה גישה לשאר הקבצים בדרייב שלך.",
+        "אין לה גישה לשאר הקבצים ב‑Google Drive שלך.",
     (S.GOOGLE_SCOPE_EXPLANATION, Lang.EN):
         "The app can create and edit only the files it creates itself. "
-        "It has no access to the rest of your Drive.",
+        "It has no access to the rest of your Google Drive.",
     (S.GOOGLE_BROWSER_HINT, Lang.HE):
-        "ייפתח דפדפן לאישור ההתחברות. הסיסמה שלך אף פעם לא עוברת דרך האפליקציה.",
+        "ייפתח דפדפן לאישור ההתחברות. הסיסמה שלך אף פעם לא עוברת דרך האפליקציה.\n"
+        "חשוב: במסך של Google יש לסמן את תיבת הסימון של הרשאת Google Drive — "
+        "היא אינה מסומנת מראש, ובלעדיה ההעלאה לא תעבוד.",
     (S.GOOGLE_BROWSER_HINT, Lang.EN):
         "A browser window will open for consent. Your password never passes "
-        "through this app.",
+        "through this app.\n"
+        "Important: tick the Google Drive permission checkbox on Google's "
+        "screen - it is not ticked for you, and uploads will not work "
+        "without it.",
     (S.GOOGLE_AUTH_FAILED, Lang.HE): "ההתחברות ל‑Google נכשלה:",
     (S.GOOGLE_AUTH_FAILED, Lang.EN): "Google sign-in failed:",
     (S.GOOGLE_AUTH_TIMEOUT, Lang.HE): "ההתחברות ל‑Google לא הושלמה בזמן.",
@@ -329,21 +363,30 @@ _STRINGS = {
         "ההעלאה ל‑Google Drive אינה מוגדרת בגרסה הזו.",
     (S.GOOGLE_NOT_CONFIGURED, Lang.EN):
         "Google Drive upload is not configured in this build.",
-    (S.GOOGLE_SIGNING_IN, Lang.HE): "מתחבר ל‑Google…",
-    (S.GOOGLE_SIGNING_IN, Lang.EN): "Signing in to Google…",
+    (S.GOOGLE_SIGNING_IN, Lang.HE): "מתחבר ל‑Google Drive…",
+    (S.GOOGLE_SIGNING_IN, Lang.EN): "Signing in to Google Drive…",
     (S.GOOGLE_AUTH_DENIED, Lang.HE): "לא ניתן אישור גישה ל‑Google Drive.",
     (S.GOOGLE_AUTH_DENIED, Lang.EN): "Access to Google Drive was declined.",
+    (S.GDRIVE_TIMEOUT, Lang.HE):
+        "הפעולה מול Google Drive לא הסתיימה בזמן והופסקה. אפשר לנסות שוב.",
+    (S.GDRIVE_TIMEOUT, Lang.EN):
+        "The Google Drive operation took too long and was stopped. "
+        "You can try again.",
     (S.GOOGLE_MISSING_SCOPE, Lang.HE):
-        "החיבור הצליח אך לא ניתנה גישה ל‑Drive. יש להוסיף את הרשאת ה‑Drive במסך ההסכמה ולהתחבר שוב.",
+        "ההתחברות הצליחה, אבל לא ניתנה גישה ל‑Google Drive.\n\n"
+        "במסך האישור של Google יש תיבת סימון על הרשאת Google Drive, "
+        "והיא אינה מסומנת מראש. יש לסמן אותה לפני לחיצה על «המשך», "
+        "ולהתחבר שוב.",
     (S.GOOGLE_MISSING_SCOPE, Lang.EN):
-        "Signed in, but Drive access was not granted. Add the Drive scope on the "
-        "OAuth consent screen, then sign in again.",
+        "Signed in, but Google Drive access was not granted.\n\n"
+        "Google's consent screen has a checkbox for the Google Drive "
+        "permission and leaves it unticked. Tick it before pressing Continue, "
+        "then sign in again.",
     (S.GOOGLE_MENU_ACCOUNT, Lang.HE): "חשבון Google…",
-    (S.GOOGLE_MENU_ACCOUNT, Lang.EN): "Google account…",
-    (S.GOOGLE_MENU_UPLOAD_CURRENT, Lang.HE): "העלה את התמליל הנוכחי…",
+    (S.GOOGLE_MENU_ACCOUNT, Lang.EN): "Google account…",    (S.GOOGLE_MENU_UPLOAD_CURRENT, Lang.HE): "העלה את התמליל הנוכחי…",
     (S.GOOGLE_MENU_UPLOAD_CURRENT, Lang.EN): "Upload the current transcript…",
-    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.HE): "פתח את תיקיית Transcriptions בדרייב",
-    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.EN): "Open the Transcriptions folder in Drive",
+    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.HE): "פתח את תיקיית Transcriptions ב‑Google Drive",
+    (S.GOOGLE_MENU_OPEN_FOLDER, Lang.EN): "Open the Transcriptions folder in Google Drive",
     (S.GOOGLE_MENU_ASK_EVERY_TIME, Lang.HE): "שאל לפני כל העלאה",
     (S.GOOGLE_MENU_ASK_EVERY_TIME, Lang.EN): "Ask before every upload",
     (S.TRANSCRIPT_UPLOAD_DRIVE, Lang.HE): "העלאת התמליל ל‑Google Drive",
@@ -456,8 +499,8 @@ _STRINGS = {
     (S.SENSITIVITY_HIGH, Lang.EN):   "Very sensitive",
 
     # --- New-model check ---
-    (S.CHECK_MODELS, Lang.HE):           "\u27F3 מודלים",
-    (S.CHECK_MODELS, Lang.EN):           "\u27F3 Models",
+    (S.CHECK_MODELS, Lang.HE):           "בדוק עדכון למודלים",
+    (S.CHECK_MODELS, Lang.EN):           "Check for model updates",
     (S.CHECK_MODELS_TOOLTIP, Lang.HE):   "בדוק אם קיימים מודלי תמלול עבריים חדשים",
     (S.CHECK_MODELS_TOOLTIP, Lang.EN):   "Check for new Hebrew transcription models",
     (S.CHECK_MODELS_TITLE, Lang.HE):     "בדיקת מודלים חדשים",
@@ -470,6 +513,61 @@ _STRINGS = {
     (S.CHECK_MODELS_FOUND, Lang.EN):     "New Hebrew models found:\n\n{list}",
     (S.CHECK_MODELS_FAILED, Lang.HE):    "בדיקת המודלים נכשלה:\n{msg}",
     (S.CHECK_MODELS_FAILED, Lang.EN):    "Model check failed:\n{msg}",
+
+    (S.UPDATES_BUTTON, Lang.HE): "\u27F3 עדכונים",
+    (S.UPDATES_BUTTON, Lang.EN): "\u27F3 Updates",
+    (S.UPDATES_TOOLTIP, Lang.HE): "בדיקת עדכונים למודלי התמלול ולתוכנה",
+    (S.UPDATES_TOOLTIP, Lang.EN): "Check for transcription-model and application updates",
+    (S.MODELS_CHECK_AUTOMATICALLY, Lang.HE): "בדוק עדכונים למודלים אוטומאטית",
+    (S.MODELS_CHECK_AUTOMATICALLY, Lang.EN): "Check for model updates automatically",
+    (S.UPDATE_MENU_CHECK_NOW, Lang.HE): "בדוק עדכונים לתוכנה",
+    (S.UPDATE_MENU_CHECK_NOW, Lang.EN): "Check for application updates",
+    (S.UPDATE_MENU_CHECK_AUTOMATICALLY, Lang.HE): "בדוק עדכונים לתוכנה אוטומאטית",
+    (S.UPDATE_MENU_CHECK_AUTOMATICALLY, Lang.EN):
+        "Check for application updates automatically",
+    (S.FREQ_NEVER, Lang.HE): "אף פעם",
+    (S.FREQ_NEVER, Lang.EN): "Never",
+    (S.FREQ_DAILY, Lang.HE): "כל יום",
+    (S.FREQ_DAILY, Lang.EN): "Every day",
+    (S.FREQ_WEEKLY, Lang.HE): "כל שבוע",
+    (S.FREQ_WEEKLY, Lang.EN): "Every week",
+    (S.FREQ_MONTHLY, Lang.HE): "כל חודש",
+    (S.FREQ_MONTHLY, Lang.EN): "Every month",
+    (S.UPDATE_TITLE, Lang.HE): "עדכוני תוכנה",
+    (S.UPDATE_TITLE, Lang.EN): "Application updates",
+    (S.UPDATE_CONSENT_QUESTION, Lang.HE):
+        "האם לבדוק אוטומטית אחת ליום אם קיימה גרסה חדשה?\n\n"
+        "לשם כך תישלח פנייה ל‑GitHub. לא נשלחים פרטים אישיים, הקלטות או תמלולים — "
+        "אך כתובת ה‑IP שלך תהיה גלויה ל‑GitHub.\n\n"
+        "אפשר לשנות זאת בכל עת בתפריט העדכונים.",
+    (S.UPDATE_CONSENT_QUESTION, Lang.EN):
+        "Check once a day whether a newer version is available?\n\n"
+        "This contacts GitHub. No personal details, recordings or transcripts "
+        "are sent — but your IP address will be visible to GitHub.\n\n"
+        "You can change this at any time from the Updates menu.",
+    (S.UPDATE_CONSENT_YES, Lang.HE): "כן, בדוק אוטומטית",
+    (S.UPDATE_CONSENT_YES, Lang.EN): "Yes, check automatically",
+    (S.UPDATE_CONSENT_NO, Lang.HE): "לא, אבדוק בעצמי",
+    (S.UPDATE_CONSENT_NO, Lang.EN): "No, I'll check myself",
+    (S.UPDATE_AVAILABLE, Lang.HE):
+        "גרסה {latest} זמינה (מותקנת כעת {current}).",
+    (S.UPDATE_AVAILABLE, Lang.EN):
+        "Version {latest} is available (you have {current}).",
+    (S.UPDATE_OPEN_PAGE, Lang.HE): "פתח את דף הגרסאות",
+    (S.UPDATE_OPEN_PAGE, Lang.EN): "Open the releases page",
+    (S.UPDATE_LATER, Lang.HE): "לא עכשיו",
+    (S.UPDATE_LATER, Lang.EN): "Not now",
+    (S.UPDATE_UP_TO_DATE, Lang.HE): "הגרסה שלך ({current}) עדכנית.",
+    (S.UPDATE_UP_TO_DATE, Lang.EN): "You are up to date ({current}).",
+    (S.UPDATE_CHECKING, Lang.HE): "בודק עדכונים…",
+    (S.UPDATE_CHECKING, Lang.EN): "Checking for updates…",
+    (S.UPDATE_FAILED, Lang.HE): "לא ניתן היה לבדוק עדכונים:\n{msg}",
+    (S.UPDATE_FAILED, Lang.EN): "Could not check for updates:\n{msg}",
+    (S.UPDATE_RATE_LIMITED, Lang.HE):
+        "GitHub הגביל זמנית את מספר הפניות מהרשת שלך. נסה שוב מאוחר יותר.",
+    (S.UPDATE_RATE_LIMITED, Lang.EN):
+        "GitHub is temporarily limiting requests from your network. "
+        "Please try again later.",
 }
 # fmt: on
 
