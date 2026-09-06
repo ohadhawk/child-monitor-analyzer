@@ -3,7 +3,7 @@
     Lightweight installer / updater for Child Monitor Analyzer (Windows).
 
 .DESCRIPTION
-    A tiny bootstrap script — no multi-GB installer required. It clones (or
+    A tiny bootstrap script - no multi-GB installer required. It clones (or
     updates) the source from GitHub, creates a Python virtual environment,
     installs the dependencies, and can launch the GUI.
 

@@ -1,0 +1,96 @@
+Child Monitor Analyzer - Patch to v1.2.2 (cumulative)
+=====================================================
+
+WHAT THIS FIXES
+---------------
+Google sign-in failing at the very last step with "invalid_request
+client_secret is missing".
+
+A Google OAuth client has two halves: a client id and a client secret. The app
+only checked for the id before deciding the feature was ready. On a machine
+where just the id was configured, the app reported itself configured, showed
+the sign-in button, opened the browser, and let you work all the way through
+Google's consent screen -- only for Google to reject the final exchange,
+because its token endpoint requires the secret even for desktop apps.
+
+Now both halves are required before sign-in is offered, and when one is
+missing the app says which one instead of a generic "not configured".
+
+The startup log also records each half separately:
+
+    Google Drive: client id=set, client secret=MISSING
+
+so a single log file settles what is wrong, without guesswork.
+
+WHAT THIS CHANGES BESIDES
+-------------------------
+- Retires files this version no longer ships: the Pillow imaging binaries
+  (dropped along with matplotlib, which the audio-tagging library used to pull
+  in for no runtime benefit) and package metadata for superseded versions of
+  click and Pillow. They are MOVED, not deleted -- see ROLLBACK.
+- A support bundle collector, scripts\collect-diagnostics.ps1 in the
+  repository, which gathers the app's own state into one zip to share.
+
+CUMULATIVE
+----------
+This patch applies to ANY earlier v1.x portable release, whether or not you
+already applied the v1.1.6, v1.1.7 or v1.2.1 patches. It is built by comparing
+against the original v1.0.0 release, so the result is identical to a fresh
+install of v1.2.2 regardless of what you started from.
+
+An exe-only swap is NOT enough - this patch also adds files to _internal.
+
+CONTENTS
+--------
+- monitor-gui.exe            (v1.2.2 executable - replaces the old one)
+- _internal\...              (python-docx, lxml, keyring, QtSvg bindings and
+                              the Google Drive brand mark; 182 files)
+- retired.txt                (the 19 files this version no longer ships)
+- version.txt                (the version this patch installs)
+- apply-patch.ps1            (applies all of the above, with backups)
+
+HOW TO APPLY
+------------
+Option A - script (recommended):
+    powershell -ExecutionPolicy Bypass -File apply-patch.ps1 -ReleaseDir "C:\path\to\child_monitor_analyzer"
+
+  (If you copy the contents of this patch directly into the release folder,
+   run apply-patch.ps1 with no -ReleaseDir argument. Choose Yes/All if asked
+   to overwrite; only base_library.zip is overwritten and is backed up first.)
+
+  Add -KeepRetiredFiles to skip the retirement step.
+
+Option B - manual:
+    1. Close the app.
+    2. Copy monitor-gui.exe into the release folder (replace the old one).
+    3. Merge this patch's _internal\ into the release's _internal\ (add new
+       files; overwrite base_library.zip).
+    4. Optionally delete the files listed in retired.txt.
+
+Your downloaded models\ folder is not touched.
+
+GOOGLE DRIVE UPLOAD IS OPTIONAL, AND NEEDS CONFIGURING
+------------------------------------------------------
+This build ships WITHOUT an OAuth client, so Drive upload stays hidden until
+you supply one. Set BOTH of these and restart the app:
+
+    MONITOR_GOOGLE_CLIENT_ID
+    MONITOR_GOOGLE_CLIENT_SECRET
+
+Setting only the id is what this release exists to diagnose: sign-in will not
+be offered, and the log will name the missing half. See the README section
+"Google Drive upload" and scripts\setup-google-drive.ps1 in the repository.
+
+Nothing is sent anywhere until you sign in and choose to upload.
+
+ROLLBACK
+--------
+Backups are created next to the files:
+    monitor-gui.exe.bak_<timestamp>
+    _internal\base_library.zip.bak_<timestamp>
+Retired files are moved to:
+    removed_by_patch_<timestamp>\
+Copy that folder's contents back over _internal to undo the retirement.
+
+SHA-256 of monitor-gui.exe (v1.2.2):
+2A20E2BC9EB1DDF119CA2A664B2B908F04D4794032EC3860777D242F4C8DF9FA

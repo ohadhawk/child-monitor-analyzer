@@ -3,7 +3,7 @@
     Collect diagnostic information for Child Monitor Analyzer support.
 
 .DESCRIPTION
-    Gathers logs and configuration state — no passwords, no credentials —
+    Gathers logs and configuration state - no passwords, no credentials -
     and packages them into a zip file you can share.
 
 .PARAMETER ReleaseDir
@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── Find the release folder ──────────────────────────────────────────────────
+# -- Find the release folder --------------------------------------------------
 
 function Test-Release($dir) {
     $dir -and (Test-Path -LiteralPath (Join-Path $dir 'monitor-gui.exe')) -and
@@ -40,12 +40,12 @@ $ReleaseDir = (Resolve-Path -LiteralPath $ReleaseDir).Path
 $internal   = Join-Path $ReleaseDir '_internal'
 Write-Host "Release folder : $ReleaseDir" -ForegroundColor Cyan
 
-# ── Build output folder ──────────────────────────────────────────────────────
+# -- Build output folder ------------------------------------------------------
 
 $tmp = Join-Path $env:TEMP "cma_diag_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
-# ── Helper: write a section to a report file ─────────────────────────────────
+# -- Helper: write a section to a report file ---------------------------------
 
 $report = Join-Path $tmp 'report.txt'
 function Write-Section([string]$title, [scriptblock]$body) {
@@ -55,7 +55,7 @@ function Write-Section([string]$title, [scriptblock]$body) {
     "" | Add-Content -LiteralPath $report
 }
 
-# ── System information ───────────────────────────────────────────────────────
+# -- System information -------------------------------------------------------
 
 Write-Section "System" {
     "Date        : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -70,7 +70,7 @@ Write-Section "System" {
     }
 }
 
-# ── Google Drive configuration ───────────────────────────────────────────────
+# -- Google Drive configuration -----------------------------------------------
 
 Write-Section "Google Drive: OAuth client" {
     # Report presence and source only; never print the values themselves.
@@ -101,7 +101,7 @@ Write-Section "Google Drive: OAuth client" {
     }
 }
 
-# ── Google Drive: keyring / credential store ─────────────────────────────────
+# -- Google Drive: keyring / credential store ---------------------------------
 
 Write-Section "Google Drive: keyring" {
     $epFile = Join-Path $internal 'keyring-25.7.0.dist-info\entry_points.txt'
@@ -118,7 +118,7 @@ Write-Section "Google Drive: keyring" {
     else { "  service not found" }
 }
 
-# ── _internal\monitor directory listing ──────────────────────────────────────
+# -- _internal\monitor directory listing --------------------------------------
 
 Write-Section "_internal\monitor layout" {
     $monDir = Join-Path $internal 'monitor'
@@ -131,7 +131,7 @@ Write-Section "_internal\monitor layout" {
     }
 }
 
-# ── _internal\monitor\gdrive listing ────────────────────────────────────────
+# -- _internal\monitor\gdrive listing ----------------------------------------
 
 Write-Section "_internal\monitor\gdrive listing" {
     $gd = Join-Path $internal 'monitor\gdrive'
@@ -147,7 +147,7 @@ Write-Section "_internal\monitor\gdrive listing" {
     }
 }
 
-# ── keyring dist-info ────────────────────────────────────────────────────────
+# -- keyring dist-info --------------------------------------------------------
 
 Write-Section "keyring dist-info files" {
     $ki = Join-Path $internal 'keyring-25.7.0.dist-info'
@@ -158,7 +158,7 @@ Write-Section "keyring dist-info files" {
     }
 }
 
-# ── PySide6 QtSvg (needed for the Drive icon) ────────────────────────────────
+# -- PySide6 QtSvg (needed for the Drive icon) --------------------------------
 
 Write-Section "PySide6 QtSvg" {
     $svg = Join-Path $internal 'PySide6\QtSvg.pyd'
@@ -168,7 +168,7 @@ Write-Section "PySide6 QtSvg" {
     }
 }
 
-# ── Application logs ─────────────────────────────────────────────────────────
+# -- Application logs ---------------------------------------------------------
 
 $logDir = Join-Path $env:USERPROFILE '.child-monitor-analyzer\logs'
 Write-Section "Log files available" {
@@ -192,7 +192,7 @@ if (Test-Path -LiteralPath $logDir) {
         ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $logsOut -Force }
 }
 
-# ── Pack into zip ─────────────────────────────────────────────────────────────
+# -- Pack into zip -------------------------------------------------------------
 
 if (Test-Path -LiteralPath $Out) { Remove-Item -LiteralPath $Out -Force }
 Compress-Archive -Path "$tmp\*" -DestinationPath $Out -CompressionLevel Optimal

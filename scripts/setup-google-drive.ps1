@@ -98,7 +98,7 @@ if (-not $ClientId) {
     Write-Host '    User type:  External'
     Write-Host '    Scopes:     .../auth/drive.file , openid , email'
     Write-Host ''
-    Write-Host '    drive.file lets the app touch only files it created itself —'
+    Write-Host '    drive.file lets the app touch only files it created itself -'
     Write-Host '    it can never read the rest of the Drive. Do not add more.'
     Read-Host '    Press Enter to open the consent screen'
     Start-Process 'https://console.cloud.google.com/auth/overview'
