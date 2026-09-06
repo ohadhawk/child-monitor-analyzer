@@ -9,4 +9,4 @@ This package provides:
   - Pipeline orchestration and CLI / GUI interfaces
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
