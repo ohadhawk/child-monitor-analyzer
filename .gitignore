@@ -57,6 +57,9 @@ child_monitor_analyzer.zip
 monitor.zip
 child-monitor-analyzer-patch-*.zip
 
+# Support bundles: carry usernames, machine names and recording paths
+*diagnostics.zip
+
 # Probe / debug output
 gap_probe_out.txt
 

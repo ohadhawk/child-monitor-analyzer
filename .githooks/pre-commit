@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks a commit that would publish a Google OAuth credential.
+# Enabled by: git config core.hooksPath .githooks
+set -e
+
+root=$(git rev-parse --show-toplevel)
+
+for candidate in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        python_bin="$candidate"
+        break
+    fi
+done
+
+if [ -z "$python_bin" ]; then
+    echo "pre-commit: no Python found; skipping the credential check." >&2
+    exit 0
+fi
+
+exec "$python_bin" "$root/scripts/check_no_secrets.py"
