@@ -56,6 +56,7 @@ pip_output.txt
 child_monitor_analyzer.zip
 monitor.zip
 child-monitor-analyzer-patch-*.zip
+changes-since-*.zip
 
 # Support bundles: carry usernames, machine names and recording paths
 *diagnostics.zip
