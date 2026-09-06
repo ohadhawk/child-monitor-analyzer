@@ -169,6 +169,13 @@ def _log_gdrive_self_test() -> None:
                     exc_info=True)
         return
     log.info("Google Drive: OAuth client configured=%s", auth.is_configured())
+    # Which half is missing, never the values: a bare "configured=False" cost a
+    # full round of user diagnosis once already.
+    log.info(
+        "Google Drive: client id=%s, client secret=%s",
+        "set" if auth.client_id() else "MISSING",
+        "set" if auth.client_secret() else "MISSING",
+    )
     try:
         log.info("Google Drive: credential backend=%s", store.backend_name())
     except store.CredentialStoreUnavailable as exc:

@@ -97,7 +97,40 @@ def test_endpoints_are_https():
 def test_client_id_can_be_supplied_by_environment(monkeypatch):
     monkeypatch.setenv(auth.CLIENT_ID_ENV_VAR, "test-client.apps.googleusercontent.com")
     assert auth.client_id() == "test-client.apps.googleusercontent.com"
+
+
+def test_both_halves_are_needed_before_the_feature_is_offered(monkeypatch):
+    """An id alone reaches Google and is rejected there, after the consent screen.
+
+    Observed in the field: the log said configured=True, the user worked through
+    the whole browser flow, and Google answered "invalid_request client_secret
+    is missing". The readiness check has to cover what the exchange requires.
+    """
+    monkeypatch.setattr(auth, "DEFAULT_CLIENT_ID", "")
+    monkeypatch.setattr(auth, "DEFAULT_CLIENT_SECRET", "")
+    monkeypatch.setenv(auth.CLIENT_ID_ENV_VAR, "test-client.apps.googleusercontent.com")
+    monkeypatch.delenv(auth.CLIENT_SECRET_ENV_VAR, raising=False)
+    assert not auth.is_configured(), "an id without a secret was accepted"
+
+    monkeypatch.setenv(auth.CLIENT_SECRET_ENV_VAR, "GOCSPX-secret")
     assert auth.is_configured()
+
+
+def test_the_missing_half_is_named(monkeypatch):
+    """"Not configured" sends people to the Cloud Console for the wrong thing."""
+    monkeypatch.setattr(auth, "DEFAULT_CLIENT_ID", "")
+    monkeypatch.setattr(auth, "DEFAULT_CLIENT_SECRET", "")
+    monkeypatch.setenv(auth.CLIENT_ID_ENV_VAR, "test-client.apps.googleusercontent.com")
+    monkeypatch.delenv(auth.CLIENT_SECRET_ENV_VAR, raising=False)
+
+    with pytest.raises(auth.AuthError) as caught:
+        auth.start_link_flow(open_browser=lambda url: None)
+    assert auth.CLIENT_SECRET_ENV_VAR in str(caught.value)
+
+    monkeypatch.delenv(auth.CLIENT_ID_ENV_VAR, raising=False)
+    with pytest.raises(auth.AuthError) as caught:
+        auth.start_link_flow(open_browser=lambda url: None)
+    assert auth.CLIENT_ID_ENV_VAR in str(caught.value)
 
 
 def test_feature_is_off_when_unconfigured(monkeypatch):
@@ -253,6 +286,7 @@ def test_request_logging_is_disabled():
 
 def test_flow_times_out_and_tears_the_listener_down(monkeypatch):
     monkeypatch.setenv(auth.CLIENT_ID_ENV_VAR, "cid")
+    monkeypatch.setenv(auth.CLIENT_SECRET_ENV_VAR, "GOCSPX-test")
     opened: list[str] = []
     with pytest.raises(auth.AuthCancelled):
         auth.start_link_flow(open_browser=opened.append, timeout=0.05)
@@ -1268,6 +1302,10 @@ def test_an_untrusted_web_view_link_is_discarded(tmp_path, monkeypatch):
 
 def _configured(monkeypatch):
     monkeypatch.setattr(auth, "DEFAULT_CLIENT_ID", "1-abc.apps.googleusercontent.com")
+    # Google's token endpoint needs both halves, so is_configured() does too.
+    monkeypatch.setattr(auth, "DEFAULT_CLIENT_SECRET", "GOCSPX-test")
+    monkeypatch.delenv(auth.CLIENT_ID_ENV_VAR, raising=False)
+    monkeypatch.delenv(auth.CLIENT_SECRET_ENV_VAR, raising=False)
 
 
 def test_cancelling_aborts_the_wait_promptly(monkeypatch):

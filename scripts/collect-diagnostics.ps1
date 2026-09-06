@@ -72,25 +72,33 @@ Write-Section "System" {
 
 # ── Google Drive configuration ───────────────────────────────────────────────
 
-Write-Section "Google Drive: client_id" {
-    # Report presence and source only; never print the value itself.
+Write-Section "Google Drive: OAuth client" {
+    # Report presence and source only; never print the values themselves.
     $authPy = Join-Path $internal 'monitor\gdrive\auth.py'
     if (Test-Path -LiteralPath $authPy) {
-        $line = Select-String -LiteralPath $authPy -Pattern 'DEFAULT_CLIENT_ID\s*=' |
-                Select-Object -First 1
-        if ($line) {
-            $blank = $line.Line -match '""'
-            "DEFAULT_CLIENT_ID in auth.py is: $(if ($blank) {'empty (not baked in)'} else {'set'})"
-        } else {
-            "DEFAULT_CLIENT_ID line not found in auth.py"
+        foreach ($name in @('DEFAULT_CLIENT_ID', 'DEFAULT_CLIENT_SECRET')) {
+            $line = Select-String -LiteralPath $authPy -Pattern "$name\s*=" | Select-Object -First 1
+            if ($line) {
+                $blank = $line.Line -match '""'
+                "$name in auth.py is: $(if ($blank) {'empty (not baked in)'} else {'set'})"
+            } else {
+                "$name line not found in auth.py"
+            }
         }
     } else {
-        "monitor\gdrive\auth.py not found under _internal"
+        "auth.py is not on disk (normal: PyInstaller packs it into the exe)"
     }
 
-    # Check environment variable (value is omitted — just presence)
-    $envVal = [System.Environment]::GetEnvironmentVariable('MONITOR_GOOGLE_CLIENT_ID')
-    "MONITOR_GOOGLE_CLIENT_ID env: $(if ($envVal) {'set'} else {'not set'})"
+    # Both halves are required. Google rejects the token exchange with
+    # "client_secret is missing" if only the id is set.
+    foreach ($var in @('MONITOR_GOOGLE_CLIENT_ID', 'MONITOR_GOOGLE_CLIENT_SECRET')) {
+        $proc = [System.Environment]::GetEnvironmentVariable($var)
+        $user = [System.Environment]::GetEnvironmentVariable($var, 'User')
+        $mach = [System.Environment]::GetEnvironmentVariable($var, 'Machine')
+        "$var : process=$(if ($proc) {'set'} else {'NOT SET'})" +
+        "  user=$(if ($user) {'set'} else {'NOT SET'})" +
+        "  machine=$(if ($mach) {'set'} else {'NOT SET'})"
+    }
 }
 
 # ── Google Drive: keyring / credential store ─────────────────────────────────

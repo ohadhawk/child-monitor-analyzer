@@ -136,8 +136,14 @@ def _client_credentials() -> dict[str, str]:
 
 
 def is_configured() -> bool:
-    """Return True if an OAuth client id is available."""
-    return bool(client_id())
+    """Return True if a complete OAuth client is available.
+
+    Both halves are required: Google's token endpoint rejects the exchange with
+    "client_secret is missing" even for Desktop clients using PKCE. Accepting an
+    id alone would advertise the feature as ready and then fail the user only
+    after they had worked through the whole consent screen.
+    """
+    return bool(client_id() and client_secret())
 
 
 # ===========================
@@ -558,9 +564,12 @@ def start_link_flow(
         MissingScope: Sign-in succeeded without Drive access.
     """
     if not is_configured():
+        # Name the half that is missing: "not configured" sends people back to
+        # the Cloud Console when the id was fine and only the secret was unset.
+        missing = CLIENT_ID_ENV_VAR if not client_id() else CLIENT_SECRET_ENV_VAR
         raise AuthError(
-            "No Google OAuth client is configured for this build "
-            f"(set {CLIENT_ID_ENV_VAR})."
+            f"No complete Google OAuth client is configured for this build "
+            f"(set {missing})."
         )
 
     verifier, challenge = generate_pkce()
