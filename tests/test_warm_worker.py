@@ -466,6 +466,108 @@ def test_worker_ignores_unknown_job_types(monkeypatch):
     assert [m["type"] for m in messages if m["type"] == MSG_FINISHED]
 
 
+def test_worker_warms_up_then_runs_jobs_on_the_same_pool(monkeypatch):
+    import monitor.analysis_worker as worker_mod
+
+    job_q: _queue_mod.Queue = _queue_mod.Queue()
+
+    class _WarmPool(_StubPool):
+        warmed: list = []
+
+        def warm(self, stt_model_key):
+            self.warmed.append(stt_model_key)
+            # Queue the next jobs only now, so the warm-up saw an idle queue.
+            job_q.put({"type": JOB_ANALYZE, "job_id": 1, "audio_path": "a.wav"})
+            job_q.put({"type": JOB_SHUTDOWN})
+
+    pool = _WarmPool(_StubPipeline(report=_StubReport()))
+    monkeypatch.setattr(worker_mod, "_setup_child_logging", lambda *a, **k: None)
+    monkeypatch.setattr(worker_mod, "ModelPool", lambda: pool)
+    job_q.put({"type": "warmup", "stt_model_key": "fast"})
+    result_q: _queue_mod.Queue = _queue_mod.Queue()
+    thread = threading.Thread(
+        target=run_worker,
+        args=(job_q, result_q, multiprocessing.Value("q", 0), None), daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    messages = _drain(result_q)
+    assert pool.warmed == ["fast"]
+    assert [m["job_id"] for m in messages if m["type"] == MSG_FINISHED] == [1]
+
+
+def test_warm_up_is_skipped_when_a_job_is_already_queued(monkeypatch):
+    class _WarmPool(_StubPool):
+        warmed: list = []
+
+        def warm(self, stt_model_key):
+            self.warmed.append(stt_model_key)
+
+    pool = _WarmPool(_StubPipeline(report=_StubReport()))
+    jobs = [
+        {"type": "warmup", "stt_model_key": "fast"},
+        {"type": JOB_ANALYZE, "job_id": 1, "audio_path": "a.wav"},
+    ]
+    messages = _run_worker_loop(monkeypatch, jobs, pool)
+    assert pool.warmed == []
+    assert [m["job_id"] for m in messages if m["type"] == MSG_FINISHED] == [1]
+
+
+def test_failed_warm_up_does_not_kill_the_worker(monkeypatch):
+    import monitor.analysis_worker as worker_mod
+
+    class _BadWarmPool(_StubPool):
+        def warm(self, stt_model_key):
+            raise RuntimeError("boom")
+
+    pool = _BadWarmPool(_StubPipeline(report=_StubReport()))
+    monkeypatch.setattr(worker_mod, "_queue_is_empty", lambda q: True)
+    jobs = [
+        {"type": "warmup", "stt_model_key": "fast"},
+        {"type": JOB_ANALYZE, "job_id": 1, "audio_path": "a.wav"},
+    ]
+    messages = _run_worker_loop(monkeypatch, jobs, pool)
+    assert [m["type"] for m in messages if m["type"] in (MSG_ERROR, MSG_FINISHED)] == [MSG_FINISHED]
+
+
+def test_decode_errors_are_classified_through_the_exception_chain():
+    from monitor.analysis_worker import _is_decode_error
+
+    DecoderError = type("NoBackendError", (Exception,), {"__module__": "audioread.exceptions"})
+    try:
+        try:
+            raise DecoderError()
+        except DecoderError:
+            raise RuntimeError("wrapped")
+    except RuntimeError as exc:
+        assert _is_decode_error(exc)
+    assert not _is_decode_error(ValueError("x"))
+
+
+def test_decode_failure_is_reported_with_kind():
+    q = _queue_mod.Queue()
+    DecoderError = type("LibsndfileError", (Exception,), {"__module__": "soundfile"})
+    pool = _StubPool(_StubPipeline(exc=DecoderError("Unspecified internal error.")))
+    _run_job(
+        {"type": JOB_ANALYZE, "job_id": 3, "audio_path": "a.mp3"},
+        q, pool, multiprocessing.Value("q", 0), {"job_id": None},
+    )
+    err = [m for m in _drain(q) if m["type"] == MSG_ERROR][0]
+    assert err["kind"] == "decode"
+    assert err["msg"] == "Unspecified internal error."
+
+
+def test_warm_up_never_downloads_missing_models(fake_models, monkeypatch):
+    import monitor.analysis_worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "_models_on_disk", lambda key: False)
+    pool = ModelPool()
+    pool.warm("thorough")
+    assert fake_models["stt"].instances == 0
+    assert fake_models["events"].instances == 0
+
+
 # ======================================================================
 # GUI wiring
 # ======================================================================

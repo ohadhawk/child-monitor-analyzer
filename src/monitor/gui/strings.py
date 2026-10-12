@@ -105,6 +105,10 @@ class S:
     GOOGLE_SESSION_EXPIRED = "google_session_expired"
     GOOGLE_KEYRING_UNAVAILABLE = "google_keyring_unavailable"
     GOOGLE_NOT_CONFIGURED = "google_not_configured"
+    #: Half a credential is present, so the machine is misconfigured rather
+    #: than the build being incapable. Saying "not configured in this build"
+    #: here was read as "this version does not support Drive".
+    GOOGLE_CONFIG_INCOMPLETE = "google_config_incomplete"
     GOOGLE_SIGNING_IN = "google_signing_in"
     GOOGLE_AUTH_DENIED = "google_auth_denied"
     GOOGLE_MISSING_SCOPE = "google_missing_scope"
@@ -154,6 +158,7 @@ class S:
 
     # --- STT progress ---
     STT_TRANSCRIBING = "stt_transcribing"
+    STT_ETA = "stt_eta"
     STT_GAP_FILL = "stt_gap_fill"
     STT_STARTING = "stt_starting"
     STT_DOWNLOADING = "stt_downloading"
@@ -170,6 +175,9 @@ class S:
     # --- Partial analysis warning ---
     PARTIAL_WARNING = "partial_warning"
     AI_PROFANITY_UNAVAILABLE = "ai_profanity_unavailable"
+    AUDIO_EVENTS_FAILED = "audio_events_failed"
+    ANALYSIS_DECODE_FAILED = "analysis_decode_failed"
+    ANALYSIS_PARTIAL_KEPT = "analysis_partial_kept"
 
     # --- Sensitivity panel ---
     SENSITIVITY_TITLE = "sensitivity_title"
@@ -363,6 +371,12 @@ _STRINGS = {
         "ההעלאה ל‑Google Drive אינה מוגדרת בגרסה הזו.",
     (S.GOOGLE_NOT_CONFIGURED, Lang.EN):
         "Google Drive upload is not configured in this build.",
+    (S.GOOGLE_CONFIG_INCOMPLETE, Lang.HE):
+        "ההגדרה של Google Drive לא הושלמה במחשב הזה: חסר {missing}. "
+        "יש להגדיר אותו כמשתנה סביבה ולהפעיל מחדש את התוכנה.",
+    (S.GOOGLE_CONFIG_INCOMPLETE, Lang.EN):
+        "Google Drive is only half configured on this computer: {missing} is "
+        "missing. Set it as an environment variable and restart the app.",
     (S.GOOGLE_SIGNING_IN, Lang.HE): "מתחבר ל‑Google Drive…",
     (S.GOOGLE_SIGNING_IN, Lang.EN): "Signing in to Google Drive…",
     (S.GOOGLE_AUTH_DENIED, Lang.HE): "לא ניתן אישור גישה ל‑Google Drive.",
@@ -465,6 +479,8 @@ _STRINGS = {
     # --- STT progress ---
     (S.STT_TRANSCRIBING, Lang.HE):   "מתמלל...",
     (S.STT_TRANSCRIBING, Lang.EN):   "Transcribing...",
+    (S.STT_ETA, Lang.HE):            "נותרו כ-{eta}",
+    (S.STT_ETA, Lang.EN):            "~{eta} left",
     (S.STT_GAP_FILL, Lang.HE):       "משלים פערים...",
     (S.STT_GAP_FILL, Lang.EN):       "Filling gaps...",
     (S.STT_STARTING, Lang.HE):       "מתחיל תמלול...",
@@ -490,6 +506,12 @@ _STRINGS = {
     (S.PARTIAL_WARNING, Lang.EN):    "⚠ Analysis in progress — results shown are partial",
     (S.AI_PROFANITY_UNAVAILABLE, Lang.HE): "⚠ מודל AI לזיהוי ניבול פה לא זמין — זיהוי מילים בלבד",
     (S.AI_PROFANITY_UNAVAILABLE, Lang.EN): "⚠ AI profanity model unavailable — word-list detection only",
+    (S.AUDIO_EVENTS_FAILED, Lang.HE): "⚠ זיהוי אירועי שמע נכשל — מוצגים תמלול וניבול פה בלבד. פתיחת הקובץ מחדש תנסה שוב רק את זיהוי האירועים.",
+    (S.AUDIO_EVENTS_FAILED, Lang.EN): "⚠ Sound-event detection failed — showing transcript and profanity only. Reopening the file retries event detection only.",
+    (S.ANALYSIS_DECODE_FAILED, Lang.HE): "לא ניתן היה לקרוא את קובץ השמע.\nייתכן שהקובץ פגום, או שהוא נמצא בכונן ענן (למשל Google Drive) ועדיין לא הורד.\nנסו להעתיק את הקובץ לכונן מקומי ולפתוח אותו משם.\n\nפרטים: {msg}",
+    (S.ANALYSIS_DECODE_FAILED, Lang.EN): "The audio file could not be read.\nIt may be damaged, or stored on a cloud drive (such as Google Drive) and not downloaded yet.\nTry copying it to a local drive and opening it from there.\n\nDetails: {msg}",
+    (S.ANALYSIS_PARTIAL_KEPT, Lang.HE): "התוצאות החלקיות נשמרו — פתיחת הקובץ מחדש תמשיך מהנקודה שבה נעצר (כפתור הניתוח מתחיל מההתחלה).",
+    (S.ANALYSIS_PARTIAL_KEPT, Lang.EN): "Partial results were kept — reopening the file resumes where it stopped (the Analyze button starts over).",
 
     (S.SENSITIVITY_TITLE, Lang.HE):  "⚙ רגישות",
     (S.SENSITIVITY_TITLE, Lang.EN):  "⚙ Sensitivity",

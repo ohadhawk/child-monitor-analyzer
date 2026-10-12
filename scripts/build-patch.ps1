@@ -54,10 +54,12 @@ Write-Host "New build : $NewDir" -ForegroundColor Cyan
 Write-Host "Baseline  : $BaseDir" -ForegroundColor Cyan
 
 # Index the baseline by relative path. Length is compared first, so an
-# identical-size file is the only case that costs a hash.
+# identical-size file is the only case that costs a hash. models\ holds the
+# user's downloads, never build output, so it must never be listed as retired.
 $baseIndex = @{}
 Get-ChildItem -LiteralPath $BaseDir -Recurse -File | ForEach-Object {
-    $baseIndex[$_.FullName.Substring($BaseDir.Length + 1)] = $_
+    $rel = $_.FullName.Substring($BaseDir.Length + 1)
+    if ($rel -notlike 'models\*') { $baseIndex[$rel] = $_ }
 }
 
 $added = New-Object System.Collections.ArrayList

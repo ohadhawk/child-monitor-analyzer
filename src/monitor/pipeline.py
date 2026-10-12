@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from .audio_events import AudioEventDetector
-from .cancellation import raise_if_cancelled
+from .cancellation import AnalysisCancelled, raise_if_cancelled
 from .model_cache import setup_model_environment
 from .models import AnalysisReport, Detection, DetectionType, TranscribedSegment, sanitize_artifact_stem
 from .profanity import ProfanityDetector
@@ -258,7 +258,7 @@ class AnalysisPipeline:
         raise_if_cancelled()
 
         # --- Phase 1: STT + audio events in parallel ---
-        segments, audio_detections = self._run_parallel_phase(
+        segments, audio_detections, events_error = self._run_parallel_phase(
             audio_path, _progress, _task,
             sub_fn=_sub,
             on_partial_stt=on_partial_stt,
@@ -289,6 +289,11 @@ class AnalysisPipeline:
                 on_warning(S.AI_PROFANITY_UNAVAILABLE)
             except Exception:
                 log.debug("on_warning callback failed", exc_info=True)
+        if events_error is not None and on_warning:
+            try:
+                on_warning(S.AUDIO_EVENTS_FAILED)
+            except Exception:
+                log.debug("on_warning callback failed", exc_info=True)
 
         # --- Phase 3: Merge and deduplicate ---
         all_detections = audio_detections + profanity_detections
@@ -306,11 +311,15 @@ class AnalysisPipeline:
             stt_model_key=stt_model_key,
         )
 
-        # Persist analysis results alongside the audio file.
-        try:
-            report.save_cache()
-        except OSError as exc:
-            log.warning("Could not save analysis cache: %s", exc)
+        # Persist analysis results alongside the audio file.  Skipped when
+        # events failed, so reopening the file re-runs only event detection.
+        if events_error is not None:
+            log.warning("Not saving the analysis cache: audio event detection failed.")
+        else:
+            try:
+                report.save_cache()
+            except OSError as exc:
+                log.warning("Could not save analysis cache: %s", exc)
 
         # Export transcript as plain text (skip for events-only mode).
         if not events_only:
@@ -334,7 +343,7 @@ class AnalysisPipeline:
         on_partial_stt: Optional[PartialSttCallback] = None,
         on_partial_events: Optional[PartialEventsCallback] = None,
         stt_model_key: str = "thorough",
-    ) -> tuple[List[TranscribedSegment], List[Detection]]:
+    ) -> tuple[List[TranscribedSegment], List[Detection], Optional[BaseException]]:
         """Run STT and audio event detection in parallel threads.
 
         Args:
@@ -346,7 +355,8 @@ class AnalysisPipeline:
             on_partial_events: Callback for incremental event detections.
 
         Returns:
-            Tuple of (segments, audio_event_detections).
+            Tuple of (segments, audio_event_detections, events_error).
+            events_error is set when event detection failed but STT succeeded.
         """
         progress_fn(30, tr(S.PIPE_PARALLEL))
 
@@ -445,7 +455,7 @@ class AnalysisPipeline:
 
         # If both are fully cached, skip the parallel phase entirely.
         if cached_stt is not None and not need_gap_fill_only and cached_events is not None:
-            return cached_stt, cached_events
+            return cached_stt, cached_events, None
 
         # Progress callbacks for each task, forwarded to task_fn.
         # Also update the main progress bar proportionally during the
@@ -652,6 +662,7 @@ class AnalysisPipeline:
 
         segments: List[TranscribedSegment] = []
         audio_detections: List[Detection] = []
+        events_error: Optional[BaseException] = None
 
         # ThreadPoolExecutor runs both tasks concurrently. STT is CPU/GPU-
         # bound; PANNs is also CPU-bound but on a different model.
@@ -734,6 +745,19 @@ class AnalysisPipeline:
 
             for future in as_completed(futures):
                 task_name = futures[future]
+                exc = future.exception()
+                if exc is not None and not isinstance(exc, AnalysisCancelled):
+                    pending = [n for f, n in futures.items() if not f.done()]
+                    log.error(
+                        "Parallel task %r failed (%s: %s); still running: %s.",
+                        task_name, type(exc).__name__, exc, pending or "nothing",
+                        exc_info=exc,
+                    )
+                    if task_name == "events" and self._stt is not None:
+                        # Keep the transcript; the report is built without events.
+                        events_error = exc
+                        task_fn(1, -1, "")
+                        continue
                 if task_name == "stt":
                     segments = future.result()
                     # Merge in previously-completed gap-fill segments
@@ -792,7 +816,7 @@ class AnalysisPipeline:
         if cached_events is not None:
             audio_detections = cached_events
 
-        return segments, audio_detections
+        return segments, audio_detections, events_error
 
     @staticmethod
     def _compute_duration(

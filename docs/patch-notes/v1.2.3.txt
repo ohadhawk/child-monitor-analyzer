@@ -1,0 +1,103 @@
+Child Monitor Analyzer - Patch to v1.2.3 (cumulative)
+=====================================================
+
+WHAT THIS FIXES
+---------------
+Analysis failing at the very end of a long recording with an empty
+"Analysis failed:" message, after transcription had already finished.
+
+Some MP3 files cannot be read by the audio library used for sound-event
+detection (shouting, crying, etc.), and its fallback reader was not available
+in the portable build. Transcription reads the same file through a different
+decoder and worked fine - but the event step failing threw the whole result
+away, and the error only appeared once transcription had finished.
+
+Now:
+- Sound-event detection falls back to the same decoder transcription uses,
+  so these files are analysed normally.
+- If event detection still fails, you keep the transcript and the profanity
+  results, with a warning that sound events are missing. Reopening the file
+  retries only the event step; the transcript is not redone.
+- If the analysis fails, partial results stay on screen instead of vanishing.
+- When the file itself cannot be read, the message says so in plain words
+  (damaged file, or a cloud file that is not downloaded yet - copy it to a
+  local drive) instead of an empty error.
+
+OTHER IMPROVEMENTS
+------------------
+- Models now load in the background when the app starts, so the first
+  analysis begins right away instead of waiting ~30 seconds.
+- The transcription progress shows an estimated time remaining.
+- The progress bar no longer says "analysis complete" while work is still
+  running.
+- Gap-fill (re-scanning long silent stretches for missed speech) now works for
+  MP3 and other formats, not only WAV. Recordings with gaps of 5+ minutes may
+  take a little longer and catch more speech.
+- Each recording is decoded fewer times, which lowers memory use on long files.
+- monitor-gui.exe now carries its version number (right-click > Properties >
+  Details).
+- Much more detailed logs when an audio file cannot be read, to make support
+  faster.
+
+CUMULATIVE
+----------
+This patch applies to ANY earlier v1.x portable release, whether or not you
+already applied earlier patches. It is built by comparing against the original
+v1.0.0 release, so the result is identical to a fresh install of v1.2.3
+regardless of what you started from.
+
+An exe-only swap is NOT enough - this patch also adds files to _internal.
+
+CONTENTS
+--------
+- monitor-gui.exe            (v1.2.3 executable - replaces the old one)
+- _internal\...              (python-docx, lxml, keyring, QtSvg bindings, the
+                              Google Drive brand mark, and updated runtime
+                              files; 183 files)
+- retired.txt                (the 19 files this version no longer ships)
+- version.txt                (the version this patch installs)
+- apply-patch.ps1            (applies all of the above, with backups)
+
+HOW TO APPLY
+------------
+Option A - script (recommended):
+    powershell -ExecutionPolicy Bypass -File apply-patch.ps1 -ReleaseDir "C:\path\to\child_monitor_analyzer"
+
+  (If you copy the contents of this patch directly into the release folder,
+   run apply-patch.ps1 with no -ReleaseDir argument. Choose Yes/All if asked
+   to overwrite.)
+
+  Add -KeepRetiredFiles to skip the retirement step.
+
+Option B - manual:
+    1. Close the app.
+    2. Copy monitor-gui.exe into the release folder (replace the old one).
+    3. Merge this patch's _internal\ into the release's _internal\ (add new
+       files; overwrite existing ones).
+    4. Optionally delete the files listed in retired.txt.
+
+Your downloaded models\ folder is not touched.
+
+GOOGLE DRIVE UPLOAD IS OPTIONAL, AND NEEDS CONFIGURING
+------------------------------------------------------
+This build ships WITHOUT an OAuth client, so Drive upload stays hidden until
+you supply one. Set BOTH of these and restart the app:
+
+    MONITOR_GOOGLE_CLIENT_ID
+    MONITOR_GOOGLE_CLIENT_SECRET
+
+See the README section "Google Drive upload" and scripts\setup-google-drive.ps1
+in the repository. Nothing is sent anywhere until you sign in and choose to
+upload.
+
+ROLLBACK
+--------
+Backups are created next to the files:
+    monitor-gui.exe.bak_<timestamp>
+    _internal\base_library.zip.bak_<timestamp>
+Retired files are moved to:
+    removed_by_patch_<timestamp>\
+Copy that folder's contents back over _internal to undo the retirement.
+
+SHA-256 of monitor-gui.exe (v1.2.3):
+4AD8355EDE9BB1D61A1CDEB30ED344064DFAF114A4AF35B7A89FAAC7F331A3CA

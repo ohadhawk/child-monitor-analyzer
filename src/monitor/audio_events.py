@@ -57,6 +57,84 @@ def _get_best_device() -> str:
     log.info("Using CPU device.")
     return "cpu"
 
+
+def _describe_audio_file(audio_path: str) -> str:
+    """Return a one-line description of *audio_path* for failure diagnostics."""
+    import os
+    parts = []
+    try:
+        st = os.stat(audio_path)
+        parts.append(f"size={st.st_size}")
+        attrs = getattr(st, "st_file_attributes", None)
+        if attrs is not None:
+            # Cloud placeholders (Google Drive / OneDrive) stream data on read.
+            flags = {0x1000: "OFFLINE", 0x40000: "RECALL_ON_OPEN",
+                     0x400000: "RECALL_ON_DATA_ACCESS", 0x400: "REPARSE_POINT"}
+            parts.append(f"attrs=0x{attrs:x}[{','.join(n for b, n in flags.items() if attrs & b) or '-'}]")
+    except OSError as exc:
+        parts.append(f"stat_failed={exc!r}")
+    try:
+        with open(audio_path, "rb") as fh:
+            parts.append(f"head={fh.read(16).hex()}")
+    except OSError as exc:
+        parts.append(f"open_failed={exc!r}")
+    try:
+        import soundfile
+        parts.append(f"libsndfile={soundfile.__libsndfile_version__}")
+        info = soundfile.info(audio_path)
+        parts.append(
+            f"sf_format={info.format}/{info.subtype} sr={info.samplerate} "
+            f"ch={info.channels} frames={info.frames} dur={info.duration:.1f}s"
+        )
+    except Exception as exc:
+        parts.append(f"sf_info_failed={type(exc).__name__}: {exc}")
+    try:
+        import audioread
+        backends = [b.__name__ for b in audioread.available_backends()]
+        parts.append(f"audioread_backends={backends or 'NONE'}")
+    except Exception as exc:
+        parts.append(f"audioread_check_failed={type(exc).__name__}: {exc}")
+    return " ".join(parts)
+
+
+def _load_mono(audio_path: str, sr: int) -> tuple[np.ndarray, int]:
+    """Load *audio_path* as mono float32 at *sr* Hz.
+
+    librosa uses libsndfile, whose MP3 decoder rejects some files, and its
+    audioread fallback has no backend in the frozen build.  PyAV (bundled for
+    faster-whisper) decodes those files, so use it as the fallback.
+    """
+    import librosa
+    t0 = time.perf_counter()
+    try:
+        audio, out_sr = librosa.load(audio_path, sr=sr, mono=True)
+        log.debug("librosa decoded %s: %d samples @ %d Hz in %.1fs",
+                  audio_path, len(audio), out_sr, time.perf_counter() - t0)
+        return audio, out_sr
+    except Exception as exc:
+        chain = []
+        e: BaseException | None = exc
+        while e is not None:
+            chain.append(f"{type(e).__module__}.{type(e).__name__}: {e}")
+            e = e.__cause__ or e.__context__
+        log.warning(
+            "librosa could not decode %s after %.1fs; falling back to PyAV.\n"
+            "  exception chain: %s\n  file: %s",
+            audio_path, time.perf_counter() - t0, " <- ".join(chain),
+            _describe_audio_file(audio_path),
+            exc_info=True,
+        )
+    from faster_whisper.audio import decode_audio
+    t1 = time.perf_counter()
+    try:
+        audio = decode_audio(audio_path, sampling_rate=sr)
+    except Exception:
+        log.exception("PyAV also failed to decode %s.", audio_path)
+        raise
+    log.info("PyAV decoded %s: %d samples @ %d Hz (%.1fs) in %.1fs",
+             audio_path, len(audio), sr, len(audio) / sr, time.perf_counter() - t1)
+    return audio, sr
+
 # ===========================
 # CONSTANTS
 # ===========================
@@ -73,6 +151,9 @@ VOLUME_SPIKE_PERCENTILE = 95
 
 # Minimum RMS value to consider (avoid silence artifacts).
 VOLUME_SPIKE_MIN_RMS = 0.05
+
+# PANNs native sample rate; volume-spike detection reuses the same samples.
+PANNS_SAMPLE_RATE = 32000
 
 
 def _format_hhmmss(seconds: float) -> str:
@@ -201,14 +282,26 @@ class AudioEventDetector:
         if on_progress:
             on_progress(10, tr(S.AE_LOADING_AUDIO))
 
+        raise_if_cancelled()
+        t_load = time.perf_counter()
+        audio, sample_rate = _load_mono(audio_path_str, PANNS_SAMPLE_RATE)
+        log.info(
+            "Audio events: decoded %.1fs (%d samples @ %d Hz) in %.1fs",
+            len(audio) / sample_rate, len(audio), sample_rate,
+            time.perf_counter() - t_load,
+        )
+        raise_if_cancelled()
+
         detections.extend(self._detect_events_panns(
-            audio_path_str, on_progress, on_chunk_detections,
+            audio, sample_rate, on_progress, on_chunk_detections,
         ))
 
         if on_progress:
             on_progress(80, tr(S.AE_CHECKING_VOLUME))
 
-        detections.extend(self._detect_volume_spikes(audio_path_str))
+        raise_if_cancelled()
+        detections.extend(self._detect_volume_spikes(audio, sample_rate))
+        del audio
 
         # sorted() creates a NEW list -- original is unchanged.
         detections.sort(key=lambda detection: detection.start)
@@ -218,7 +311,7 @@ class AudioEventDetector:
             elapsed, len(detections),
         )
         if on_progress:
-            on_progress(100, f"{tr(S.PIPE_DONE)} — {len(detections)}")
+            on_progress(100, f"{tr(S.TASK_AUDIO_EVENTS)}: {len(detections)}")
         return detections
 
     # ------------------------------------------------------------------
@@ -227,7 +320,8 @@ class AudioEventDetector:
 
     def _detect_events_panns(
         self,
-        audio_path: str,
+        audio: np.ndarray,
+        sample_rate: int,
         on_progress: Optional[Callable[[int, str], None]] = None,
         on_chunk_detections: Optional[Callable[[List["Detection"]], None]] = None,
     ) -> List[Detection]:
@@ -237,7 +331,8 @@ class AudioEventDetector:
         avoid memory issues and provide real progress reporting.
 
         Args:
-            audio_path: Path string to the audio file.
+            audio: Mono float32 samples at PANNS_SAMPLE_RATE.
+            sample_rate: Sample rate of *audio*.
             on_progress: Optional callback(percent, label) for progress updates.
             on_chunk_detections: Optional callback fired after each chunk with
                 preliminary detections (timestamps offset to absolute position).
@@ -246,7 +341,6 @@ class AudioEventDetector:
             List of Detection objects for recognised AudioSet classes.
         """
         self._load_sed()
-        import librosa
         from .vendor.panns import load_labels_cached
 
         # AudioSet display names, ordered by class index. Loaded from the
@@ -254,19 +348,10 @@ class AudioEventDetector:
         panns_labels = load_labels_cached(str(ensure_panns_labels()))
 
         CHUNK_SECONDS = 300  # 5 minutes per chunk
-        PANNS_SR = 32000
+        PANNS_SR = sample_rate
 
         t0 = time.perf_counter()
-        if on_progress:
-            on_progress(15, tr(S.AE_LOADING_AUDIO))
-
-        # Load audio at 32 kHz (PANNs native sample rate), mono channel.
-        audio, sample_rate = librosa.load(audio_path, sr=PANNS_SR, mono=True)
         total_duration = len(audio) / sample_rate
-        log.info(
-            "PANNs: loaded audio %.1fs (%d samples @ %d Hz) in %.1fs",
-            total_duration, len(audio), sample_rate, time.perf_counter() - t0,
-        )
 
         chunk_samples = CHUNK_SECONDS * PANNS_SR
         total_samples = len(audio)
@@ -467,22 +552,24 @@ class AudioEventDetector:
     # Volume spike detection via RMS energy
     # ------------------------------------------------------------------
 
-    def _detect_volume_spikes(self, audio_path: str) -> List[Detection]:
+    def _detect_volume_spikes(self, audio: np.ndarray, sample_rate: int) -> List[Detection]:
         """Detect abnormally loud sections using RMS energy analysis.
 
         Args:
-            audio_path: Path string to the audio file.
+            audio: Mono float32 samples.
+            sample_rate: Sample rate of *audio*.
 
         Returns:
             List of VOLUME_SPIKE Detection objects.
         """
         import librosa
 
-        t0 = time.perf_counter()
-        audio, sample_rate = librosa.load(audio_path, sr=22050, mono=True)
-        hop_length = 512
+        # Scale the 512/2048 window tuned at 22.05 kHz so frame timing is unchanged.
+        hop_length = max(1, round(512 * sample_rate / 22050))
         # librosa.feature.rms returns shape (1, num_frames); take [0] for 1-D array.
-        rms_values = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
+        rms_values = librosa.feature.rms(
+            y=audio, frame_length=4 * hop_length, hop_length=hop_length,
+        )[0]
 
         if rms_values.max() < VOLUME_SPIKE_MIN_RMS:
             log.debug("Volume: max RMS %.4f below minimum %.4f; no spikes.", rms_values.max(), VOLUME_SPIKE_MIN_RMS)

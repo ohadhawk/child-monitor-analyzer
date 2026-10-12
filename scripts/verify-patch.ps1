@@ -50,8 +50,9 @@ if ($LASTEXITCODE -ge 8) { throw "Copying the baseline failed (robocopy $LASTEXI
 Expand-Archive -LiteralPath $Zip -DestinationPath $patch -Force
 & (Join-Path $patch "apply-patch.ps1") -ReleaseDir $install
 
-# Rollback artefacts the patch leaves behind on purpose, plus its own files.
-$ignore = '\.bak_\d{8}_\d{6}$|^removed_by_patch_|^apply-patch\.ps1$|^READ_ME_PATCH\.txt$|^retired\.txt$|^version\.txt$'
+# Rollback artefacts the patch leaves behind on purpose, plus its own files and
+# the user's downloaded models.
+$ignore = '\.bak_\d{8}_\d{6}$|^removed_by_patch_|^apply-patch\.ps1$|^READ_ME_PATCH\.txt$|^retired\.txt$|^version\.txt$|^models\\'
 
 function Get-Index($root) {
     $index = @{}
@@ -64,6 +65,12 @@ function Get-Index($root) {
 
 $p = Get-Index $install
 $f = Get-Index $FreshDir
+
+$modelsBefore = @(Get-ChildItem -LiteralPath (Join-Path $BaseDir 'models') -Recurse -File -ErrorAction SilentlyContinue).Count
+$modelsAfter  = @(Get-ChildItem -LiteralPath (Join-Path $install 'models') -Recurse -File -ErrorAction SilentlyContinue).Count
+if ($modelsAfter -ne $modelsBefore) {
+    throw "The patch touched the models folder ($modelsBefore files before, $modelsAfter after)."
+}
 
 $missing = @($f.Keys | Where-Object { -not $p.ContainsKey($_) } | Sort-Object)
 $extra   = @($p.Keys | Where-Object { -not $f.ContainsKey($_) } | Sort-Object)

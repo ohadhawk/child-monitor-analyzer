@@ -54,6 +54,7 @@ MSG_READY = "ready"
 # ===========================
 
 JOB_ANALYZE = "analyze"
+JOB_WARMUP = "warmup"
 JOB_SHUTDOWN = "shutdown"
 
 # How often the watchdog thread checks whether the GUI asked to cancel.
@@ -196,10 +197,75 @@ class ModelPool:
         self._stt_model_name = model_name
         return self._stt
 
+    def warm(self, stt_model_key: str) -> None:
+        """Load every model the next job will need, if already on disk.
+
+        Never downloads: a first run must show download progress, which only
+        a real analysis job reports.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        if not _models_on_disk(stt_model_key):
+            log.info("Warm-up skipped: models for %r are not downloaded yet.", stt_model_key)
+            return
+
+        t0 = time.perf_counter()
+        pipeline = self.pipeline_for(stt_model_key)
+        loaders = {
+            "sed": pipeline._audio_events._load_sed,
+            "profanity": pipeline._profanity.preload_ai_model,
+        }
+        if pipeline._stt is not None:
+            loaders["stt"] = pipeline._stt._load_model
+        with ThreadPoolExecutor(max_workers=len(loaders), thread_name_prefix="warmup") as ex:
+            futures = {name: ex.submit(fn) for name, fn in loaders.items()}
+        for name, future in futures.items():
+            if future.exception() is not None:
+                log.warning("Warm-up of %s failed; it will load on the next job.",
+                            name, exc_info=future.exception())
+        log.info("Warm-up for %r done in %.1fs (%s).",
+                 stt_model_key, time.perf_counter() - t0, ", ".join(loaders))
+
+
+def _models_on_disk(stt_model_key: str) -> bool:
+    """True if the PANNs checkpoint and the selected STT model are local."""
+    from .model_cache import _PANNS_CHECKPOINT_NAME, get_models_dir, get_panns_dir
+
+    if not (get_panns_dir() / _PANNS_CHECKPOINT_NAME).exists():
+        return False
+    if stt_model_key == "none":
+        return True
+    from .stt import DEFAULT_MODEL, TURBO_MODEL, _STT_LEGACY_DIRS, _STT_LOCAL_DIRS
+    model_name = TURBO_MODEL if stt_model_key == "fast" else DEFAULT_MODEL
+    dirs = [_STT_LOCAL_DIRS.get(model_name), _STT_LEGACY_DIRS.get(model_name)]
+    return any(d and (get_models_dir() / d / "config.json").exists() for d in dirs)
+
 
 # ===========================
 # SUBPROCESS ENTRY POINT
 # ===========================
+
+_DECODE_ERROR_MODULES = ("soundfile", "audioread", "av")
+
+
+def _queue_is_empty(q) -> bool:
+    try:
+        return q.empty()
+    except (OSError, ValueError, NotImplementedError):
+        return True
+
+
+def _is_decode_error(exc: BaseException) -> bool:
+    """True if *exc* (or anything it chains from) came from an audio decoder."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if type(e).__module__.split(".")[0] in _DECODE_ERROR_MODULES:
+            return True
+        e = e.__cause__ or e.__context__
+    return False
 
 def _watch_cancellation(
     cancel_upto,
@@ -286,6 +352,9 @@ def _run_job(
 
     try:
         log.info("Job %d started: %s (model=%s)", job_id, audio_path, stt_model_key)
+        from .models import sanitize_artifact_stem
+        p = Path(audio_path)
+        log.info("Job %d artifacts dir: %s", job_id, p.parent / sanitize_artifact_stem(p.stem))
         pipeline = pool.pipeline_for(stt_model_key)
         report = pipeline.analyze(
             audio_path,
@@ -310,7 +379,12 @@ def _run_job(
     except Exception as exc:
         tb = traceback.format_exc()
         log.exception("Job %d failed for %s", job_id, audio_path)
-        _put({"type": MSG_ERROR, "msg": str(exc), "traceback": tb})
+        _put({
+            "type": MSG_ERROR,
+            "msg": str(exc) or type(exc).__name__,
+            "kind": "decode" if _is_decode_error(exc) else "other",
+            "traceback": tb,
+        })
 
     finally:
         state["job_id"] = None
@@ -377,6 +451,16 @@ def run_worker(
             if job is None or job.get("type") == JOB_SHUTDOWN:
                 log.info("Shutdown requested; worker exiting.")
                 break
+            if job.get("type") == JOB_WARMUP:
+                if not _queue_is_empty(job_queue):
+                    # A real job is waiting; it loads exactly the models it needs.
+                    log.info("Warm-up skipped: an analysis job is already queued.")
+                    continue
+                try:
+                    pool.warm(job.get("stt_model_key", "thorough"))
+                except Exception:
+                    log.exception("Warm-up failed; models will load on the next job.")
+                continue
             if job.get("type") != JOB_ANALYZE:
                 log.warning("Unknown job type: %r", job.get("type"))
                 continue

@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 
 from ..analysis_worker import (
     run_worker,
-    JOB_ANALYZE, JOB_SHUTDOWN,
+    JOB_ANALYZE, JOB_SHUTDOWN, JOB_WARMUP,
     MSG_PROGRESS, MSG_SUB_PROGRESS, MSG_SUB_PROGRESS2, MSG_SUB_PROGRESS3,
     MSG_TASK_PROGRESS, MSG_PARTIAL_STT, MSG_PARTIAL_EVENTS,
     MSG_WARNING, MSG_FINISHED, MSG_ERROR, MSG_CANCELLED, MSG_READY,
@@ -372,6 +372,8 @@ class MainWindow(QMainWindow):
         # Auto-load the most recent file after the event loop starts.
         if self._recent_files:
             QTimer.singleShot(0, self._auto_load_last_file)
+        # After auto-load, so a resumed analysis is queued first.
+        QTimer.singleShot(0, self._prewarm_worker)
         # Delayed so the window is painted before any consent prompt appears,
         # and so a first run never races the auto-loaded file.
         QTimer.singleShot(UPDATE_CHECK_DELAY_MS, self._run_startup_checks)
@@ -1213,6 +1215,15 @@ class MainWindow(QMainWindow):
             log.exception("The Google Drive package could not be imported.")
             return tr(S.GOOGLE_NOT_CONFIGURED)
         if not auth.is_configured():
+            # Half a credential means this computer is misconfigured, not that
+            # the build lacks the feature; a user read the latter as "Drive is
+            # not supported" and stopped looking.
+            have_id, have_secret = bool(auth.client_id()), bool(auth.client_secret())
+            if have_id != have_secret:
+                missing = (
+                    auth.CLIENT_SECRET_ENV_VAR if have_id else auth.CLIENT_ID_ENV_VAR
+                )
+                return tr(S.GOOGLE_CONFIG_INCOMPLETE).format(missing=missing)
             return tr(S.GOOGLE_NOT_CONFIGURED)
         if self._gdrive_store_ok is None:
             self._gdrive_store_ok = store.is_available()
@@ -1671,6 +1682,19 @@ class MainWindow(QMainWindow):
         self._worker_process.start()
         log.info("Analysis worker started (PID %s).", self._worker_process.pid)
 
+    def _prewarm_worker(self) -> None:
+        """Load models in the background so the next analysis starts immediately."""
+        if self._active_job_id is not None:
+            return  # the running job loads them anyway
+        try:
+            self._ensure_worker()
+            key = self._cmb_stt_model.currentData()
+            self._job_queue.put({"type": JOB_WARMUP, "stt_model_key": key})
+            log.info("Queued model warm-up (model=%s, worker PID %s).",
+                     key, self._worker_process.pid)
+        except Exception:
+            log.exception("Could not queue model warm-up.")
+
     def _discard_worker(self) -> None:
         """Drop all references to a dead worker so the next run respawns it."""
         for queue in (self._job_queue, self._result_queue):
@@ -1850,6 +1874,7 @@ class MainWindow(QMainWindow):
             self._lbl_elapsed.setVisible(False)
             self._btn_analyze.setEnabled(True)
             self._btn_open.setEnabled(True)
+            self._prewarm_worker()
             return
 
         # No completed report — pre-load intermediate caches for immediate display.
@@ -1964,7 +1989,7 @@ class MainWindow(QMainWindow):
                 if tb:
                     log.error("Worker traceback:\n%s", tb)
                 self._poll_timer.stop()
-                self._on_error(msg["msg"])
+                self._on_error(msg["msg"], msg.get("kind", "other"))
             else:
                 log.warning("Unknown worker message type: %r", msg_type)
         except Exception:
@@ -2235,15 +2260,17 @@ class MainWindow(QMainWindow):
         )
 
     @Slot(str)
-    def _on_error(self, error_msg: str) -> None:
+    def _on_error(self, error_msg: str, kind: str = "other") -> None:
         """Handle analysis failure.
 
         Args:
             error_msg: Description of the error.
+            kind: "decode" when the audio file could not be read.
         """
         if self._active_job_id is None:
             log.info("Ignoring stale error message (job already stopped).")
             return
+        log.error("Analysis failed (%s): %s", kind, error_msg)
         self._progress_bar.setVisible(False)
         self._sub_progress_bar.setVisible(False)
         self._sub_progress_bar2.setVisible(False)
@@ -2261,10 +2288,18 @@ class MainWindow(QMainWindow):
             self._lbl_elapsed.setText(self._format_elapsed(elapsed))
         # The worker stays alive with its models loaded, ready for the next file.
         self._active_job_id = None
-        self._clear_partial_state()
-        QMessageBox.critical(self, tr(S.ERROR),
-                             tr(S.ANALYSIS_FAILED).format(msg=error_msg))
-        log.error("Analysis failed: %s", error_msg)
+        # Keep partial results on screen; only stop the in-progress UI.
+        self._refresh_partial_ui()
+        has_partial = bool(self._partial_segments or self._partial_detections)
+        self._partial_refresh_timer.stop()
+        self._lbl_partial_warning.setVisible(False)
+        if kind == "decode":
+            text = tr(S.ANALYSIS_DECODE_FAILED).format(msg=error_msg)
+        else:
+            text = tr(S.ANALYSIS_FAILED).format(msg=error_msg)
+        if has_partial:
+            text += "\n\n" + tr(S.ANALYSIS_PARTIAL_KEPT)
+        QMessageBox.critical(self, tr(S.ERROR), text)
 
     # ------------------------------------------------------------------
     # Elapsed time helpers
@@ -2476,7 +2511,8 @@ def run_gui() -> None:
 
     log_file = _setup_logging(args.debug, args.log_dir)
 
-    log.info("Starting Child Monitor Analyzer GUI (debug=%s)", args.debug)
+    from monitor import __version__
+    log.info("Starting Child Monitor Analyzer GUI v%s (debug=%s)", __version__, args.debug)
     log.info("Log file: %s", log_file)
     _log_gdrive_self_test()
 

@@ -101,6 +101,7 @@ if ($KeepRetiredFiles) {
     $attic = Join-Path $ReleaseDir "removed_by_patch_$stamp"
     $moved = 0
     foreach ($rel in (Get-Content -LiteralPath $retiredList | Where-Object { $_.Trim() })) {
+        if ($rel -like 'models\*') { continue }  # downloaded models are user data
         $src = Join-Path $ReleaseDir $rel
         if (-not (Test-Path -LiteralPath $src)) { continue }
         $dst = Join-Path $attic $rel

@@ -18,7 +18,6 @@ import logging
 import os
 import threading
 import time
-import wave
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -29,6 +28,33 @@ from .models import TranscribedSegment, TranscribedWord
 from .gui.strings import tr, S
 
 log = logging.getLogger(__name__)
+
+# Whisper and Silero-VAD both operate on 16 kHz mono.
+_STT_SAMPLE_RATE = 16000
+
+
+def _decode_16k(audio_path: Path) -> np.ndarray:
+    """Decode *audio_path* to 16 kHz mono float32 with PyAV."""
+    from faster_whisper.audio import decode_audio
+
+    raise_if_cancelled()
+    t0 = time.perf_counter()
+    audio = decode_audio(str(audio_path), sampling_rate=_STT_SAMPLE_RATE)
+    log.info("STT: decoded %s (%.1fs of audio, %.0f MB) in %.1fs.",
+             audio_path.name, len(audio) / _STT_SAMPLE_RATE,
+             audio.nbytes / 1e6, time.perf_counter() - t0)
+    raise_if_cancelled()
+    return audio
+
+
+_ETA_MIN_ELAPSED_S = 60
+
+
+def _eta_seconds(done_s: float, total_s: float, elapsed_s: float) -> Optional[float]:
+    """Remaining wall-clock seconds at the observed rate, or None while too early to tell."""
+    if elapsed_s < _ETA_MIN_ELAPSED_S or done_s <= 0 or done_s >= total_s:
+        return None
+    return (total_s - done_s) * elapsed_s / done_s
 
 # ===========================
 # CONSTANTS
@@ -502,12 +528,8 @@ class HebrewSTT:
             log.info("Gap-fill-only mode: skipping VAD, using %d cached segments.",
                      len(cached_segments))
             segments = list(cached_segments)
-            # Compute total_duration from WAV header instead of info.duration.
-            try:
-                with wave.open(str(audio_path), "rb") as wf:
-                    total_duration = wf.getnframes() / wf.getframerate()
-            except Exception:
-                total_duration = segments[-1].end if segments else 0
+            audio = _decode_16k(audio_path)
+            total_duration = len(audio) / _STT_SAMPLE_RATE
             if on_progress:
                 on_progress(30, tr(S.STT_STARTING))
             if on_vad_done:
@@ -516,14 +538,14 @@ class HebrewSTT:
                 except Exception:
                     log.debug("on_vad_done callback failed", exc_info=True)
             segments = self._fill_gaps(
-                audio_path, segments, total_duration, on_progress, on_segment,
+                audio, segments, total_duration, on_progress, on_segment,
                 on_gap_fill_progress=on_gap_fill_progress,
                 on_gap_done=on_gap_done,
                 on_boundaries_computed=on_boundaries_computed,
                 skip_gaps=skip_gaps,
             )
             if on_progress:
-                on_progress(100, f"{tr(S.PIPE_DONE)} — {len(segments)}")
+                on_progress(100, f"{tr(S.TASK_STT)}: {len(segments)}")
             elapsed = time.perf_counter() - t0
             log.info("STT.transcribe (gap-fill-only): done in %.2fs — %d segments.",
                      elapsed, len(segments))
@@ -556,8 +578,11 @@ class HebrewSTT:
             log.info("Using %d cached VAD timestamps; skipping Silero-VAD scan.",
                      len(vad_timestamps))
 
+        # Decoded once and shared by Whisper, VAD-timestamp capture and gap-fill.
+        audio = _decode_16k(audio_path)
+
         raw_segments, info = self._batched_model.transcribe(
-            str(audio_path),
+            audio,
             language="he",
             word_timestamps=True,
             vad_filter=vad_filter if not _using_cached_vad else False,
@@ -595,6 +620,7 @@ class HebrewSTT:
 
         segments: List[TranscribedSegment] = []
         _cached_used = 0
+        t_loop = time.perf_counter()
         for segment in raw_segments:
             raise_if_cancelled()
             # Check if we already have this segment from a previous run.
@@ -636,7 +662,11 @@ class HebrewSTT:
                 pct = min(90, int(segment.end / total_duration * 90))
                 cur = _format_hhmmss(segment.end)
                 tot = _format_hhmmss(total_duration)
-                on_progress(pct, f"{tr(S.STT_TRANSCRIBING)} {cur} / {tot}")
+                label = f"{tr(S.STT_TRANSCRIBING)} {cur} / {tot}"
+                eta = _eta_seconds(segment.end, total_duration, time.perf_counter() - t_loop)
+                if eta is not None:
+                    label += f" ({tr(S.STT_ETA).format(eta=_format_hhmmss(eta))})"
+                on_progress(pct, label)
 
         if _cached_used > 0:
             log.info("Reused %d/%d segments from cache; %d newly transcribed.",
@@ -647,22 +677,21 @@ class HebrewSTT:
         # expose the raw timestamps.  We re-run Silero-VAD here (fast, ~40s
         # for a 5h file) so future resumes can skip it entirely.
         if vad_filter and not _using_cached_vad and on_vad_timestamps:
+            raise_if_cancelled()
             try:
                 from faster_whisper.vad import get_speech_timestamps as _gst, VadOptions as _VO
-                from faster_whisper.audio import decode_audio as _da
                 t_cap = time.perf_counter()
-                _audio_np = _da(str(audio_path), sampling_rate=16000)
-                _captured = _gst(_audio_np, _VO(
+                _captured = _gst(audio, _VO(
                     threshold=0.2,
                     min_silence_duration_ms=500,
                     max_speech_duration_s=30,
                 ))
-                del _audio_np
                 log.info("Captured %d VAD timestamps for caching in %.1fs.",
                          len(_captured), time.perf_counter() - t_cap)
                 on_vad_timestamps(_captured)
             except Exception:
-                log.debug("VAD timestamp capture failed", exc_info=True)
+                log.warning("VAD timestamp capture failed; the next resume will re-run VAD.",
+                            exc_info=True)
 
         # --- Gap-fill pass ---
         # Silero VAD can miss real speech in recordings with unusual acoustics
@@ -680,7 +709,7 @@ class HebrewSTT:
                 except Exception:
                     log.debug("on_vad_done callback failed", exc_info=True)
             segments = self._fill_gaps(
-                audio_path, segments, total_duration, on_progress, on_segment,
+                audio, segments, total_duration, on_progress, on_segment,
                 on_gap_fill_progress=on_gap_fill_progress,
                 on_gap_done=on_gap_done,
                 on_boundaries_computed=on_boundaries_computed,
@@ -688,7 +717,7 @@ class HebrewSTT:
             )
 
         if on_progress:
-            on_progress(100, f"{tr(S.PIPE_DONE)} — {len(segments)}")
+            on_progress(100, f"{tr(S.TASK_STT)}: {len(segments)}")
 
         elapsed = time.perf_counter() - t0
         total_words = sum(len(s.words) for s in segments)
@@ -700,6 +729,9 @@ class HebrewSTT:
             info.language,
             info.language_probability,
         )
+        if total_duration > 0:
+            log.info("STT speed: %.2fx real time (%.0fs of audio in %.0fs, %d CPU threads).",
+                     total_duration / elapsed, total_duration, elapsed, os.cpu_count() or 0)
         return segments
 
     # ------------------------------------------------------------------
@@ -719,7 +751,7 @@ class HebrewSTT:
 
     def _fill_gaps(
         self,
-        audio_path: Path,
+        audio_all: np.ndarray,
         segments: List[TranscribedSegment],
         total_duration: float,
         on_progress: Optional[Callable[[int, str], None]],
@@ -793,21 +825,8 @@ class HebrewSTT:
             self._GAP_FILL_MIN_SECONDS / 60,
         )
 
-        # Read audio file once.
-        try:
-            with wave.open(str(audio_path), "rb") as wf:
-                sr = wf.getframerate()
-                n_channels = wf.getnchannels()
-                wf.setpos(0)
-                raw = wf.readframes(wf.getnframes())
-            dtype = np.int16 if wf.getsampwidth() == 2 else np.int32
-            audio_all = np.frombuffer(raw, dtype=dtype).astype(np.float32)
-            if n_channels > 1:
-                audio_all = audio_all.reshape(-1, n_channels).mean(axis=1)
-            audio_all /= np.iinfo(dtype).max
-        except Exception as exc:
-            log.warning("Gap-fill: failed to read audio (%s); skipping.", exc)
-            return segments
+        # audio_all is the shared 16 kHz mono decode from transcribe().
+        sr = _STT_SAMPLE_RATE
 
         new_segments: List[TranscribedSegment] = []
         chunk_s = self._GAP_FILL_CHUNK_S

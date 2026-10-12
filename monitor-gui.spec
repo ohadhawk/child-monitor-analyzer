@@ -187,12 +187,43 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+
+def _version_resource():
+    """Windows version resource built from ``monitor.__version__``."""
+    import re
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+        VarFileInfo, VarStruct, VSVersionInfo,
+    )
+
+    init_py = (PROJECT_ROOT / "src" / "monitor" / "__init__.py").read_text(encoding="utf-8")
+    version = re.search(r'^__version__\s*=\s*"([^"]+)"', init_py, re.M).group(1)
+    parts = [int(p) for p in re.findall(r"\d+", version)[:4]]
+    parts += [0] * (4 - len(parts))
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=tuple(parts), prodvers=tuple(parts)),
+        kids=[
+            StringFileInfo([StringTable("040904B0", [
+                StringStruct("CompanyName", "Child Monitor Analyzer"),
+                StringStruct("FileDescription", "Child Monitor Analyzer"),
+                StringStruct("FileVersion", version),
+                StringStruct("InternalName", "monitor-gui"),
+                StringStruct("OriginalFilename", "monitor-gui.exe"),
+                StringStruct("ProductName", "Child Monitor Analyzer"),
+                StringStruct("ProductVersion", version),
+            ])]),
+            VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
+        ],
+    )
+
+
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
     name="monitor-gui",
+    version=_version_resource(),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
